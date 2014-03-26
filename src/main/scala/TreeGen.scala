@@ -1,13 +1,10 @@
 package cbc
 
 import Flags._
-import util._
 import scala.collection.mutable.ListBuffer
+import StdNames._, Names._, FreshNames._, Trees._, Positions._, Constants._
 
-abstract class TreeGen {
-  val global: SymbolTable
-  import global._
-
+object TreeGen {
   def rootId(name: Name)             = Select(Ident(nme.ROOTPKG), name)
   def rootScalaDot(name: Name)       = Select(rootId(nme.scala_), name)
   def scalaDot(name: Name)           = rootScalaDot(name)
@@ -75,8 +72,8 @@ abstract class TreeGen {
       param
     }}
 
-    val (edefs, rest) = body span treeInfo.isEarlyDef
-    val (evdefs, etdefs) = edefs partition treeInfo.isEarlyValDef
+    val (edefs, rest) = body span TreeInfo.isEarlyDef
+    val (evdefs, etdefs) = edefs partition TreeInfo.isEarlyValDef
     val gvdefs = evdefs map {
       case vdef @ ValDef(_, _, tpt, _) =>
         copyValDef(vdef)(
@@ -91,10 +88,10 @@ abstract class TreeGen {
 
     val constr = {
       if (constrMods.isTrait) {
-        if (body forall treeInfo.isInterfaceMember) None
+        if (body forall TreeInfo.isInterfaceMember) None
         else Some(
           atPos(wrappingPos(superPos, lvdefs)) (
-            DefDef(NoMods, nme.MIXIN_CONSTRUCTOR, Nil, ListOfNil, TypeTree(), Block(lvdefs, Literal(Constant())))))
+            DefDef(NoMods, nme.MIXIN_CONSTRUCTOR, Nil, List(Nil), TypeTree(), Block(lvdefs, Literal(Constant())))))
       }
       else {
         // convert (implicit ... ) to ()(implicit ... ) if its the only parameter section
@@ -123,7 +120,7 @@ abstract class TreeGen {
       field
     })
 
-    global.Template(parents, self, gvdefs ::: fieldDefs ::: constr ++: etdefs ::: rest)
+    Template(parents, self, gvdefs ::: fieldDefs ::: constr ++: etdefs ::: rest)
   }
 
   def mkParents(ownerMods: Modifiers, parents: List[Tree], parentPos: Position = NoPosition) =
@@ -132,7 +129,7 @@ abstract class TreeGen {
     else parents
 
   def mkClassDef(mods: Modifiers, name: TypeName, tparams: List[TypeDef], templ: Template): ClassDef = {
-    val isInterface = mods.isTrait && (templ.body forall treeInfo.isInterfaceMember)
+    val isInterface = mods.isTrait && (templ.body forall TreeInfo.isInterfaceMember)
     val mods1 = if (isInterface) (mods | Flags.INTERFACE) else mods
     ClassDef(mods1, name, tparams, templ)
   }
@@ -151,7 +148,7 @@ abstract class TreeGen {
       // instead of parents = Ident(C), argss = Nil as before
       // this change works great for things that are actually templates
       // but in this degenerate case we need to perform postprocessing
-      val app = treeInfo.dissectApplied(parents.head)
+      val app = TreeInfo.dissectApplied(parents.head)
       atPos(npos union cpos) { New(app.callee, app.argss) }
     } else {
       val x = tpnme.ANON_CLASS_NAME
@@ -161,7 +158,7 @@ abstract class TreeGen {
             atPos(cpos) {
               ClassDef(
                 Modifiers(FINAL), x, Nil,
-                mkTemplate(parents, self, NoMods, ListOfNil, stats, cpos.focus))
+                mkTemplate(parents, self, NoMods, List(Nil), stats, cpos.focus))
             }),
           atPos(npos) {
             New(
@@ -330,7 +327,7 @@ abstract class TreeGen {
   *  @param enums        The enumerators in the for expression
   *  @param body          The body of the for expression
   */
-  def mkFor(enums: List[Tree], sugarBody: Tree)(implicit fresh: FreshNameCreator): Tree = {
+  def mkFor(enums: List[Tree], sugarBody: Tree): Tree = {
     val (mapName, flatMapName, body) = sugarBody match {
       case Yield(tree) => (nme.map, nme.flatMap, tree)
       case _           => (nme.foreach, nme.foreach, sugarBody)
@@ -419,11 +416,11 @@ abstract class TreeGen {
   }
 
   /** Create tree for pattern definition <val pat0 = rhs> */
-  def mkPatDef(pat: Tree, rhs: Tree)(implicit fresh: FreshNameCreator): List[ValDef] =
+  def mkPatDef(pat: Tree, rhs: Tree): List[ValDef] =
     mkPatDef(Modifiers(0), pat, rhs)
 
   /** Create tree for pattern definition <mods val pat0 = rhs> */
-  def mkPatDef(mods: Modifiers, pat: Tree, rhs: Tree)(implicit fresh: FreshNameCreator): List[ValDef] = matchVarPattern(pat) match {
+  def mkPatDef(mods: Modifiers, pat: Tree, rhs: Tree): List[ValDef] = matchVarPattern(pat) match {
     case Some((name, tpt)) =>
       List(atPos(pat.pos union rhs.pos) {
         ValDef(mods, name.toTermName, tpt, rhs)
@@ -489,14 +486,14 @@ abstract class TreeGen {
   }
 
   /** Create tree for for-comprehension generator <val pat0 <- rhs0> */
-  def mkGenerator(pos: Position, pat: Tree, valeq: Boolean, rhs: Tree)(implicit fresh: FreshNameCreator): Tree = {
+  def mkGenerator(pos: Position, pat: Tree, valeq: Boolean, rhs: Tree): Tree = {
     val pat1 = patvarTransformer.transform(pat)
     if (valeq) ValEq(pat1, rhs).setPos(pos)
     else ValFrom(pat1, mkCheckIfRefutable(pat1, rhs)).setPos(pos)
   }
 
-  def mkCheckIfRefutable(pat: Tree, rhs: Tree)(implicit fresh: FreshNameCreator) =
-    if (treeInfo.isVarPatternDeep(pat)) rhs
+  def mkCheckIfRefutable(pat: Tree, rhs: Tree) =
+    if (TreeInfo.isVarPatternDeep(pat)) rhs
     else {
       val cases = List(
         CaseDef(pat.duplicate, EmptyTree, Literal(Constant(true))),
@@ -523,7 +520,7 @@ abstract class TreeGen {
   }
 
   /** Create visitor <x => x match cases> */
-  def mkVisitor(cases: List[CaseDef], checkExhaustive: Boolean, prefix: String = "x$")(implicit fresh: FreshNameCreator): Tree = {
+  def mkVisitor(cases: List[CaseDef], checkExhaustive: Boolean, prefix: String = "x$"): Tree = {
     val x   = freshTermName(prefix)
     val id  = Ident(x)
     val sel = if (checkExhaustive) id else mkUnchecked(id)
@@ -555,7 +552,7 @@ abstract class TreeGen {
           super.traverse(tree)
 
         case Bind(name, Typed(tree1, tpt))  =>
-          val newTree = if (treeInfo.mayBeTypePat(tpt)) TypeTree() else tpt.duplicate
+          val newTree = if (TreeInfo.mayBeTypePat(tpt)) TypeTree() else tpt.duplicate
           add(name, newTree)
           traverse(tree1)
 
@@ -589,9 +586,9 @@ abstract class TreeGen {
    */
   object patvarTransformer extends Transformer {
     override def transform(tree: Tree): Tree = tree match {
-      case Ident(name) if (treeInfo.isVarPattern(tree) && name != nme.WILDCARD) =>
+      case Ident(name) if (TreeInfo.isVarPattern(tree) && name != nme.WILDCARD) =>
         atPos(tree.pos)(Bind(name, atPos(tree.pos.focus) (Ident(nme.WILDCARD))))
-      case Typed(id @ Ident(name), tpt) if (treeInfo.isVarPattern(id) && name != nme.WILDCARD) =>
+      case Typed(id @ Ident(name), tpt) if (TreeInfo.isVarPattern(id) && name != nme.WILDCARD) =>
         atPos(tree.pos.withPoint(id.pos.point)) {
           Bind(name, atPos(tree.pos.withStart(tree.pos.point)) {
             Typed(Ident(nme.WILDCARD), tpt)

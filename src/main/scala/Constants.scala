@@ -9,9 +9,7 @@ import java.lang.Integer.toOctalString
 import scala.annotation.switch
 import scala.reflect.ClassTag
 
-trait Constants {
-  self: SymbolTable =>
-
+object Constants {
   final val NoTag      = 0
   final val UnitTag    = 1
   final val BooleanTag = 2

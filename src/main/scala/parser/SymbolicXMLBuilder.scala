@@ -8,6 +8,12 @@ package cbc.parser
 import scala.collection.{ mutable, immutable }
 import cbc.Flags.MUTABLE
 import cbc.util.StringOps.splitWhere
+import cbc.TreeGen
+import cbc.Trees._
+import cbc.Names._
+import cbc.{TypeNames, TermNames, nme, tpnme}
+import cbc.Positions._
+import cbc.Constants._
 
 /** This class builds instance of `Tree` that represent XML.
  *
@@ -21,9 +27,6 @@ import cbc.util.StringOps.splitWhere
  *  @version 1.0
  */
 abstract class SymbolicXMLBuilder(p: Parsers#Parser, preserveWS: Boolean) {
-  val global: cbc.SymbolTable
-  import global._
-
   private[parser] var isPattern: Boolean = _
 
   private object xmltypes extends TypeNames {
@@ -143,7 +146,7 @@ abstract class SymbolicXMLBuilder(p: Parsers#Parser, preserveWS: Boolean) {
     import xml.Utility.parseAttributeValue
 
     parseAttributeValue(s, text(pos, _), entityRef(pos, _)) match {
-      case Nil      => Select(Select(gen.scalaDot(nme.collection), nme.immutable), nme.Nil)
+      case Nil      => Select(Select(TreeGen.scalaDot(nme.collection), nme.immutable), nme.Nil)
       case t :: Nil => t
       case ts       => makeXMLseq(pos, ts.toList)
     }

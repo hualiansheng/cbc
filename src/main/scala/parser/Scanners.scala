@@ -8,15 +8,14 @@ import scala.language.postfixOps
 import scala.annotation.{ switch, tailrec }
 import scala.collection.{ mutable, immutable }
 import mutable.{ ListBuffer, ArrayBuffer }
-import cbc.settings
+import cbc.{settings, nme}
+import cbc.Names._
+import cbc.Trees._
 import cbc.util._, Chars._
 import cbc.parser.Tokens._
 import cbc.parser.xml.Utility.isNameStart
 
 trait ScannersCommon {
-  val global: cbc.SymbolTable
-  import global._
-
   /** Offset into source character array */
   type Offset = Int
 
@@ -46,9 +45,6 @@ trait ScannersCommon {
 }
 
 trait Scanners extends ScannersCommon {
-  val global: cbc.SymbolTable
-  import global._
-
   trait TokenData extends CommonTokenData {
 
     /** the next token */
@@ -169,7 +165,7 @@ trait Scanners extends ScannersCommon {
 
     def resume(lastCode: Token) = {
       token = lastCode
-      if (next.token != EMPTY && !reporter.hasErrors)
+      if (next.token != EMPTY && !cbc.reporter.hasErrors)
         syntaxError("unexpected end of input: possible missing '}' in XML block")
 
       nextToken()
@@ -1248,244 +1244,5 @@ trait Scanners extends ScannersCommon {
     def deprecationWarning(off: Offset, msg: String): Unit = ()
     def error  (off: Offset, msg: String): Unit = throw new MalformedInput(off, msg)
     def incompleteInputError(off: Offset, msg: String): Unit = throw new MalformedInput(off, msg)
-  }
-
-  /** A scanner over a given compilation unit
-   */
-  class UnitScanner(val unit: CompilationUnit, patches: List[BracePatch]) extends SourceFileScanner(unit.source) {
-    def this(unit: CompilationUnit) = this(unit, List())
-
-    override def deprecationWarning(off: Offset, msg: String)   = unit.deprecationWarning(unit.position(off), msg)
-    override def error  (off: Offset, msg: String)              = unit.error(unit.position(off), msg)
-    override def incompleteInputError(off: Offset, msg: String) = unit.incompleteInputError(unit.position(off), msg)
-
-    private var bracePatches: List[BracePatch] = patches
-
-    lazy val parensAnalyzer = new ParensAnalyzer(unit, List())
-
-    override def parenBalance(token: Token) = parensAnalyzer.balance(token)
-
-    override def healBraces(): List[BracePatch] = {
-      var patches: List[BracePatch] = List()
-      if (!parensAnalyzer.tabSeen) {
-        var bal = parensAnalyzer.balance(RBRACE)
-        while (bal < 0) {
-          patches = new ParensAnalyzer(unit, patches).insertRBrace()
-          bal += 1
-        }
-        while (bal > 0) {
-          patches = new ParensAnalyzer(unit, patches).deleteRBrace()
-          bal -= 1
-        }
-      }
-      patches
-    }
-
-    /** Insert or delete a brace, if a patch exists for this offset */
-    override def applyBracePatch(): Boolean = {
-      if (bracePatches.isEmpty || bracePatches.head.off != offset) false
-      else {
-        val patch = bracePatches.head
-        bracePatches = bracePatches.tail
-//        println("applying brace patch "+offset)//DEBUG
-        if (patch.inserted) {
-          next copyFrom this
-          error(offset, "Missing closing brace `}' assumed here")
-          token = RBRACE
-          true
-        } else {
-          error(offset, "Unmatched closing brace '}' ignored here")
-          fetchToken()
-          false
-        }
-      }
-    }
-  }
-
-  class ParensAnalyzer(unit: CompilationUnit, patches: List[BracePatch]) extends UnitScanner(unit, patches) {
-    val balance = mutable.Map(RPAREN -> 0, RBRACKET -> 0, RBRACE -> 0)
-
-    /** The source code with braces and line starts annotated with [NN] showing the index */
-    private def markedSource = {
-      val code   = unit.source.content
-      val braces = code.indices filter (idx => "{}\n" contains code(idx)) toSet;
-      val mapped = code.indices map (idx => if (braces(idx)) s"${code(idx)}[$idx]" else "" + code(idx))
-      mapped.mkString("")
-    }
-
-    init()
-    //log(s"ParensAnalyzer for ${unit.source} of length ${unit.source.content.length}\n```\n$markedSource\n```")
-
-    /** The offset of the first token on this line, or next following line if blank
-     */
-    val lineStart = new ArrayBuffer[Int]
-
-    /** The list of matching top-level brace pairs (each of which may contain nested brace pairs).
-     */
-    val bracePairs: List[BracePair] = {
-
-      var lineCount = 1
-      var lastOffset = 0
-      var indent = 0
-      val oldBalance = scala.collection.mutable.Map[Int, Int]()
-      def markBalance() = for ((k, v) <- balance) oldBalance(k) = v
-      markBalance()
-
-      def scan(bpbuf: ListBuffer[BracePair]): (Int, Int) = {
-        if (token != NEWLINE && token != NEWLINES) {
-          while (lastOffset < offset) {
-            if (buf(lastOffset) == LF) lineCount += 1
-            lastOffset += 1
-          }
-          while (lineCount > lineStart.length) {
-            lineStart += offset
-            // reset indentation unless there are new opening brackets or
-            // braces since last ident line and at the same time there
-            // are no new braces.
-            if (balance(RPAREN) >= oldBalance(RPAREN) &&
-                balance(RBRACKET) >= oldBalance(RBRACKET) ||
-                balance(RBRACE) != oldBalance(RBRACE)) {
-              indent = column(offset)
-              markBalance()
-            }
-          }
-        }
-
-        token match {
-          case LPAREN =>
-            balance(RPAREN) -= 1; nextToken(); scan(bpbuf)
-          case LBRACKET =>
-            balance(RBRACKET) -= 1; nextToken(); scan(bpbuf)
-          case RPAREN =>
-            balance(RPAREN) += 1; nextToken(); scan(bpbuf)
-          case RBRACKET =>
-            balance(RBRACKET) += 1; nextToken(); scan(bpbuf)
-          case LBRACE =>
-            balance(RBRACE) -= 1
-            val lc = lineCount
-            val loff = offset
-            val lindent = indent
-            val bpbuf1 = new ListBuffer[BracePair]
-            nextToken()
-            val (roff, rindent) = scan(bpbuf1)
-            if (lc != lineCount)
-              bpbuf += BracePair(loff, lindent, roff, rindent, bpbuf1.toList)
-            scan(bpbuf)
-          case RBRACE =>
-            balance(RBRACE) += 1
-            val off = offset; nextToken(); (off, indent)
-          case EOF =>
-            (-1, -1)
-          case _ =>
-            nextToken(); scan(bpbuf)
-        }
-      }
-
-      val bpbuf = new ListBuffer[BracePair]
-      while (token != EOF) {
-        val (roff, rindent) = scan(bpbuf)
-        if (roff != -1) {
-          val current = BracePair(-1, -1, roff, rindent, bpbuf.toList)
-          bpbuf.clear()
-          bpbuf += current
-        }
-      }
-      def bracePairString(bp: BracePair, indent: Int): String = {
-        val rangeString = {
-          import bp._
-          val lline = line(loff)
-          val rline = line(roff)
-          val tokens = List(lline, lindent, rline, rindent) map (n => if (n < 0) "??" else "" + n)
-          "%s:%s to %s:%s".format(tokens: _*)
-        }
-        val outer  = (" " * indent) + rangeString
-        val inners = bp.nested map (bracePairString(_, indent + 2))
-
-        if (inners.isEmpty) outer
-        else inners.mkString(outer + "\n", "\n", "")
-      }
-      def bpString    = bpbuf.toList map ("\n" + bracePairString(_, 0)) mkString ""
-      def startString = lineStart.mkString("line starts: [", ", ", "]")
-
-      //log(s"\n$startString\n$bpString")
-      bpbuf.toList
-    }
-
-    var tabSeen = false
-
-    def line(offset: Offset): Int = {
-      def findLine(lo: Int, hi: Int): Int = {
-        val mid = (lo + hi) / 2
-        if (offset < lineStart(mid)) findLine(lo, mid - 1)
-        else if (mid + 1 < lineStart.length && offset >= lineStart(mid + 1)) findLine(mid + 1, hi)
-        else mid
-      }
-      if (offset <= 0) 0
-      else findLine(0, lineStart.length - 1)
-    }
-
-    def column(offset: Offset): Int = {
-      var col = 0
-      var i = offset - 1
-      while (i >= 0 && buf(i) != CR && buf(i) != LF) {
-        if (buf(i) == '\t') tabSeen = true
-        col += 1
-        i -= 1
-      }
-      col
-    }
-
-    def insertPatch(patches: List[BracePatch], patch: BracePatch): List[BracePatch] = patches match {
-      case List() => List(patch)
-      case bp :: bps => if (patch.off < bp.off) patch :: patches
-                        else bp :: insertPatch(bps, patch)
-    }
-
-    def insertRBrace(): List[BracePatch] = {
-      def insert(bps: List[BracePair]): List[BracePatch] = bps match {
-        case List() => patches
-        case (bp @ BracePair(loff, lindent, roff, rindent, nested)) :: bps1 =>
-          if (lindent <= rindent) insert(bps1)
-          else {
-//           println("patch inside "+bp+"/"+line(loff)+"/"+lineStart(line(loff))+"/"+lindent"/"+rindent)//DEBUG
-            val patches1 = insert(nested)
-            if (patches1 ne patches) patches1
-            else {
-              var lin = line(loff) + 1
-              while (lin < lineStart.length && column(lineStart(lin)) > lindent)
-                lin += 1
-              if (lin < lineStart.length) {
-                val patches1 = insertPatch(patches, BracePatch(lineStart(lin), inserted = true))
-                //println("patch for "+bp+"/"+imbalanceMeasure+"/"+new ParensAnalyzer(unit, patches1).imbalanceMeasure)
-                /*if (improves(patches1))*/
-                patches1
-                /*else insert(bps1)*/
-                // (this test did not seem to work very well in practice)
-              } else patches
-            }
-          }
-      }
-      insert(bracePairs)
-    }
-
-    def deleteRBrace(): List[BracePatch] = {
-      def delete(bps: List[BracePair]): List[BracePatch] = bps match {
-        case List() => patches
-        case BracePair(loff, lindent, roff, rindent, nested) :: bps1 =>
-          if (lindent >= rindent) delete(bps1)
-          else {
-            val patches1 = delete(nested)
-            if (patches1 ne patches) patches1
-            else insertPatch(patches, BracePatch(roff, inserted = false))
-          }
-      }
-      delete(bracePairs)
-    }
-
-    // don't emit deprecation warnings about identifiers like `macro` or `then`
-    // when skimming through the source file trying to heal braces
-    override def emitIdentifierDeprecationWarnings = false
-
-    override def error(offset: Offset, msg: String) {}
   }
 }

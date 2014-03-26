@@ -10,7 +10,7 @@ import java.security.MessageDigest
 import scala.language.implicitConversions
 import scala.reflect.ClassTag
 
-trait Names {
+object Names {
   private final val HASH_SIZE  = 0x8000
   private final val HASH_MASK  = 0x7FFF
   private final val NAME_SIZE  = 0x20000

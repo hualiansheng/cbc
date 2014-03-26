@@ -10,10 +10,16 @@ package cbc.parser
 
 import scala.collection.{ mutable, immutable }
 import mutable.{ ListBuffer, StringBuilder }
-import cbc.{ settings, SymbolTable, Precedence, ModifierFlags => Flags }
+import cbc.{ settings, Precedence, ModifierFlags => Flags }
 import cbc.util.{ SourceFile, Position, FreshNameCreator }
 import cbc.util.Chars.{ isScalaLetter }
 import cbc.parser.Tokens._
+import cbc._
+import Trees._
+import Constants._
+import Names._
+import FreshNames.{freshTermName, freshTypeName}
+import Positions._
 
 /** Historical note: JavaParsers started life as a direct copy of Parsers
  *  but at a time when that Parsers had been replaced by a different one.
@@ -25,14 +31,9 @@ import cbc.parser.Tokens._
  *  McPastington and his army of very similar soldiers.
  */
 trait ParsersCommon extends ScannersCommon { self =>
-  val global: SymbolTable
-  // the use of currentUnit in the parser should be avoided as it might
-  // cause unexpected behaviour when you work with two units at the
-  // same time; use Parser.unit instead
-  import global._
 
   def newLiteral(const: Any) = Literal(Constant(const))
-  def literalUnit            = gen.mkSyntheticUnit()
+  def literalUnit            = TreeGen.mkSyntheticUnit()
 
   /** This is now an abstract class, only to work around the optimizer:
    *  methods in traits are never inlined.
@@ -127,103 +128,41 @@ trait ParsersCommon extends ScannersCommon { self =>
  *    </li>
  *  </ol>
  */
-trait Parsers extends Scanners with MarkupParsers with ParsersCommon {
-self =>
-  val global: SymbolTable
-  import global._
+trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
 
   case class OpInfo(lhs: Tree, operator: TermName, targs: List[Tree], offset: Offset) {
     def precedence = Precedence(operator.toString)
   }
 
-  abstract class SourceFileParser(val source: SourceFile) extends Parser {
+  class SourceFileParser(val source: SourceFile) extends Parser {
 
     /** The parse starting point depends on whether the source file is self-contained:
      *  if not, the AST will be supplemented.
      */
     def parseStartRule = () => compilationUnit()
 
-    def newScanner(): Scanner = new SourceFileScanner(source)
+    lazy val in = { val s = new SourceFileScanner(source); s.init(); s }
 
-    val in = newScanner()
-    in.init()
-
-    def unit: CompilationUnit
+    implicit lazy val fresh = new cbc.util.FreshNameCreator()
 
     // suppress warnings; silent abort on errors
-    def warning(offset: Offset, msg: String) {}
-    def deprecationWarning(offset: Offset, msg: String) {}
+    def warning(offset: Offset, msg: String): Unit =
+      cbc.reporter.warning(o2p(offset), msg)
 
-    def syntaxError(offset: Offset, msg: String): Unit = throw new MalformedInput(offset, msg)
-    def incompleteInputError(msg: String): Unit = throw new MalformedInput(source.content.length - 1, msg)
+    def deprecationWarning(offset: Offset, msg: String): Unit =
+      cbc.reporter.warning(o2p(offset), s"depraction warning: msg")
 
-    object symbXMLBuilder extends SymbolicXMLBuilder(this, preserveWS = true) { // DEBUG choices
-      val global: self.global.type = self.global
-    }
+    def syntaxError(offset: Offset, msg: String): Unit =
+      cbc.reporter.error(o2p(offset), msg)
 
-    /** the markup parser
-     * The first time this lazy val is accessed, we assume we were trying to parse an xml literal.
-     * The current position is recorded for later error reporting if it turns out
-     * that we don't have the xml library on the compilation classpath.
-     */
-    private[this] lazy val xmlp = {
-      unit.encounteredXml(o2p(in.offset))
-      new MarkupParser(this, preserveWS = true)
-    }
+    def incompleteInputError(msg: String): Unit =
+      cbc.reporter.error(o2p(source.content.length - 1), s"incomplete input: $msg")
 
+    /** the markup parser */
+    private[this] lazy val xmlp = new MarkupParser(this, preserveWS = true)
+    object symbXMLBuilder extends SymbolicXMLBuilder(this, preserveWS = true)
     def xmlLiteral() : Tree = xmlp.xLiteral
     def xmlLiteralPattern() : Tree = xmlp.xLiteralPattern
-  }
-
-  class UnitParser(override val unit: global.CompilationUnit, patches: List[BracePatch]) extends SourceFileParser(unit.source) { uself =>
-    def this(unit: global.CompilationUnit) = this(unit, Nil)
-
-    override def newScanner() = new UnitScanner(unit, patches)
-
-    override def warning(offset: Offset, msg: String) {
-      unit.warning(o2p(offset), msg)
-    }
-
-    override def deprecationWarning(offset: Offset, msg: String) {
-      unit.deprecationWarning(o2p(offset), msg)
-    }
-
-    private var smartParsing = false
-    @inline private def withSmartParsing[T](body: => T): T = {
-      val saved = smartParsing
-      smartParsing = true
-      try body
-      finally smartParsing = saved
-    }
-    def withPatches(patches: List[BracePatch]): UnitParser = new UnitParser(unit, patches)
-
-    val syntaxErrors = new ListBuffer[(Int, String)]
-    def showSyntaxErrors() =
-      for ((offset, msg) <- syntaxErrors)
-        unit.error(o2p(offset), msg)
-
-    override def syntaxError(offset: Offset, msg: String) {
-      if (smartParsing) syntaxErrors += ((offset, msg))
-      else unit.error(o2p(offset), msg)
-    }
-
-    override def incompleteInputError(msg: String) {
-      val offset = source.content.length - 1
-      if (smartParsing) syntaxErrors += ((offset, msg))
-      else unit.incompleteInputError(o2p(offset), msg)
-    }
-
-    /** parse unit. If there are inbalanced braces,
-     *  try to correct them and reparse.
-     */
-    def smartParse(): Tree = withSmartParsing {
-      val firstTry = parse()
-      if (syntaxErrors.isEmpty) firstTry
-      else in.healBraces() match {
-        case Nil      => showSyntaxErrors() ; firstTry
-        case patches  => (this withPatches patches).parse()
-      }
-    }
   }
 
   type Location = Int
@@ -248,8 +187,8 @@ self =>
 
   abstract class Parser extends ParserCommon { parser =>
     val in: Scanner
-    def unit: CompilationUnit
     def source: SourceFile
+    implicit def fresh: FreshNameCreator
 
     /** Scoping operator used to temporarily look into the future.
      *  Backs up scanner data before evaluating a block and restores it after.
@@ -280,14 +219,11 @@ self =>
     }
 
     class ParserTreeBuilder extends TreeBuilder {
-      val global: self.global.type = self.global
-      def unit = parser.unit
       def source = parser.source
+      implicit def fresh = parser.fresh
     }
     val treeBuilder = new ParserTreeBuilder
-    import treeBuilder.{global => _, unit => _, source => _, fresh => _, _}
-
-    implicit def fresh: FreshNameCreator = unit.fresh
+    import treeBuilder.{source => _, fresh => _, _}
 
     def o2p(offset: Offset): Position                          = Position.offset(source, offset)
     def r2p(start: Offset, mid: Offset, end: Offset): Position = rangePos(source, start, mid, end)
@@ -508,9 +444,9 @@ self =>
 
     /** Check that type parameter is not by name or repeated. */
     def checkNotByNameOrVarargs(tpt: Tree) = {
-      if (treeInfo isByNameParamType tpt)
+      if (TreeInfo isByNameParamType tpt)
         syntaxError(tpt.pos, "no by-name parameter type allowed here", skipIt = false)
-      else if (treeInfo isRepeatedParamType tpt)
+      else if (TreeInfo isRepeatedParamType tpt)
         syntaxError(tpt.pos, "no * parameter type allowed here", skipIt = false)
     }
 
@@ -599,7 +535,7 @@ self =>
     def atPos[T <: Tree](offset: Offset)(t: T): T                            = atPos(r2p(offset))(t)
     def atPos[T <: Tree](start: Offset, point: Offset)(t: T): T              = atPos(r2p(start, point))(t)
     def atPos[T <: Tree](start: Offset, point: Offset, end: Offset)(t: T): T = atPos(r2p(start, point, end))(t)
-    def atPos[T <: Tree](pos: Position)(t: T): T                             = global.atPos(pos)(t)
+    def atPos[T <: Tree](pos: Position)(t: T): T                             = Positions.atPos(pos)(t)
 
     def atInPos[T <: Tree](t: T): T  = atPos(o2p(in.offset))(t)
     def setInPos[T <: Tree](t: T): T = t setPos o2p(in.offset)
@@ -679,7 +615,7 @@ self =>
 
     def checkHeadAssoc(leftAssoc: Boolean) = checkAssoc(opHead.offset, opHead.operator, leftAssoc)
     def checkAssoc(offset: Offset, op: Name, leftAssoc: Boolean) = (
-      if (treeInfo.isLeftAssoc(op) != leftAssoc)
+      if (TreeInfo.isLeftAssoc(op) != leftAssoc)
         syntaxError(offset, "left- and right-associative operators with same precedence may not be mixed", skipIt = false)
     )
 
@@ -704,7 +640,7 @@ self =>
 
     def reduceStack(isExpr: Boolean, base: List[OpInfo], top: Tree): Tree = {
       val opPrecedence = if (isIdent) Precedence(in.name.toString) else Precedence(0)
-      val leftAssoc    = !isIdent || (treeInfo isLeftAssoc in.name)
+      val leftAssoc    = !isIdent || (TreeInfo isLeftAssoc in.name)
 
       reduceStack(isExpr, base, top, opPrecedence, leftAssoc)
     }
@@ -887,7 +823,7 @@ self =>
       def infixTypeRest(t: Tree, mode: InfixMode.Value): Tree = {
         if (isIdent && in.name != nme.STAR) {
           val opOffset = in.offset
-          val leftAssoc = treeInfo.isLeftAssoc(in.name)
+          val leftAssoc = TreeInfo.isLeftAssoc(in.name)
           if (mode != InfixMode.FirstOp) checkAssoc(opOffset, in.name, leftAssoc = mode == InfixMode.LeftOp)
           val op = identForType()
           val tycon = atPos(opOffset) { Ident(op) }
@@ -1081,7 +1017,7 @@ self =>
       if (placeholderParams.nonEmpty && !isWildcard(res)) {
         res = atPos(res.pos)(Function(placeholderParams.reverse, res))
         if (isAny) placeholderParams foreach (_.tpt match {
-          case tpt @ TypeTree() => gen.scalaAny
+          case tpt @ TypeTree() => TreeGen.scalaAny
           case _                => // some ascription
         })
         placeholderParams = List()
@@ -1096,7 +1032,7 @@ self =>
       val pname = freshTermName()
       in.nextToken()
       val id = atPos(start)(Ident(pname))
-      val param = atPos(id.pos.focus)(gen.mkSyntheticParam(pname.toTermName))
+      val param = atPos(id.pos.focus)(TreeGen.mkSyntheticParam(pname.toTermName))
       placeholderParams = param :: placeholderParams
       id
     }
@@ -1302,9 +1238,9 @@ self =>
           newLinesOpt()
           if (in.token == YIELD) {
             in.nextToken()
-            gen.mkFor(enums, gen.Yield(expr()))
+            TreeGen.mkFor(enums, TreeGen.Yield(expr()))
           } else {
-            gen.mkFor(enums, expr())
+            TreeGen.mkFor(enums, expr())
           }
         }
         def adjustStart(tree: Tree) =
@@ -1332,7 +1268,7 @@ self =>
           if (in.token == EQUALS) {
             t match {
               case Ident(_) | Select(_, _) | Apply(_, _) =>
-                t = atPos(t.pos.start, in.skipToken()) { gen.mkAssign(t, expr()) }
+                t = atPos(t.pos.start, in.skipToken()) { TreeGen.mkAssign(t, expr()) }
               case _ =>
             }
           } else if (in.token == COLON) {
@@ -1487,7 +1423,7 @@ self =>
             val tstart = in.offset
             val (parents, self, stats) = template()
             val cpos = r2p(tstart, tstart, in.lastOffset max tstart)
-            gen.mkNew(parents, self, stats, npos, cpos)
+            TreeGen.mkNew(parents, self, stats, npos, cpos)
           case _ =>
             syntaxErrorOrIncompleteAnd("illegal start of simple expression", skipIt = true)(errorTermTree)
         }
@@ -1541,7 +1477,7 @@ self =>
      */
     def argumentExprs(): List[Tree] = {
       def args(): List[Tree] = commaSeparated(
-        if (isIdent) treeInfo.assignmentToMaybeNamedArg(expr()) else expr()
+        if (isIdent) TreeInfo.assignmentToMaybeNamedArg(expr()) else expr()
       )
       in.token match {
         case LBRACE   => List(blockExpr())
@@ -1656,10 +1592,10 @@ self =>
       // why max? IDE stress tests have shown that lastOffset could be less than start,
       // I guess this happens if instead if a for-expression we sit on a closing paren.
       val genPos = r2p(start, point, in.lastOffset max start)
-      gen.mkGenerator(genPos, pat, hasEq, rhs) :: tail
+      TreeGen.mkGenerator(genPos, pat, hasEq, rhs) :: tail
     }
 
-    def makeFilter(start: Offset, tree: Tree) = gen.Filter(tree).setPos(r2p(start, tree.pos.point, tree.pos.end))
+    def makeFilter(start: Offset, tree: Tree) = TreeGen.Filter(tree).setPos(r2p(start, tree.pos.point, tree.pos.end))
 
 /* -------- PATTERNS ------------------------------------------- */
 
@@ -1726,7 +1662,7 @@ self =>
        */
       def pattern1(): Tree = pattern2() match {
         case p @ Ident(name) if in.token == COLON =>
-          if (treeInfo.isVarPattern(p))
+          if (TreeInfo.isVarPattern(p))
             atPos(p.pos.start, in.skipToken())(Typed(p, compoundType()))
           else {
             syntaxError(in.offset, "Pattern variables must start with a lower-case letter. (SLS 8.1.1.)")
@@ -1750,7 +1686,7 @@ self =>
           case Ident(nme.WILDCARD) =>
             in.nextToken()
             pattern3()
-          case Ident(name) if treeInfo.isVarPattern(p) =>
+          case Ident(name) if TreeInfo.isVarPattern(p) =>
             in.nextToken()
             atPos(p.pos.start) { Bind(name, pattern3()) }
           case _ => p
@@ -2624,7 +2560,7 @@ self =>
             syntaxError("classes are not allowed to be virtual", skipIt = false)
           }
           val template = templateOpt(mods1, name, constrMods withAnnotations constrAnnots, vparamss, tstart)
-          val result = gen.mkClassDef(mods1, name, tparams, template)
+          val result = TreeGen.mkClassDef(mods1, name, tparams, template)
           // Context bounds generate implicit parameters (part of the template) with types
           // from tparams: we need to ensure these don't overlap
           if (!classContextBounds.isEmpty)
@@ -2665,7 +2601,7 @@ self =>
       val defn   = objectDef(in.offset, NoMods)
       val pidPos = o2p(defn.pos.startOrPoint)
       val pkgPos = r2p(start, pidPos.point)
-      gen.mkPackageObject(defn, pidPos, pkgPos)
+      TreeGen.mkPackageObject(defn, pidPos, pkgPos)
     }
     def packageOrPackageObject(start: Offset): Tree = (
       if (in.token == OBJECT)
@@ -2777,8 +2713,8 @@ self =>
         if (inScalaRootPackage && ScalaValueClassNames.contains(name))
           Template(parents, self, anyvalConstructor :: body)
         else
-          gen.mkTemplate(gen.mkParents(mods, parents, parentPos),
-                         self, constrMods, vparamss, body, o2p(tstart))
+          TreeGen.mkTemplate(TreeGen.mkParents(mods, parents, parentPos),
+                             self, constrMods, vparamss, body, o2p(tstart))
       }
     }
 
@@ -3064,3 +3000,5 @@ self =>
     }
   }
 }
+
+object Parsers extends Parsers

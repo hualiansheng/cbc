@@ -10,17 +10,16 @@ import scala.reflect.ClassTag
 import cbc.Flags._
 import cbc.util.Statistics
 import cbc.util.DocStrings._
+import Positions._, Names._, StdNames._, Constants._
 
-trait Trees {
-  self: SymbolTable =>
-
+object Trees {
   var nodeCount = 0
 
-  protected def treeLine(t: Tree): String =
+  def treeLine(t: Tree): String =
     if (t.pos.isDefined && t.pos.isRange) t.pos.lineContent.drop(t.pos.column - 1).take(t.pos.end - t.pos.start + 1)
     else t.summaryString
 
-  protected def treeStatus(t: Tree, enclosingTree: Tree = null) = {
+  def treeStatus(t: Tree, enclosingTree: Tree = null) = {
     val parent = if (enclosingTree eq null) "        " else " P#%5s".format(enclosingTree.id)
 
     "[L%4s%8s] #%-6s %-15s %-10s // %s".format(t.pos.line, parent, t.id, t.pos.show, t.shortClass, treeLine(t))
@@ -732,7 +731,7 @@ trait Trees {
         case _: ApplyToImplicitArgs => new ApplyToImplicitArgs(fun, args)
         case _: ApplyImplicitView => new ApplyImplicitView(fun, args)
         // TODO: ApplyConstructor ???
-        case self.pendingSuperCall => self.pendingSuperCall
+        case `pendingSuperCall` => `pendingSuperCall`
         case _ => new Apply(fun, args)
       }).copyAttrs(tree)
     def ApplyDynamic(tree: Tree, qual: Tree, args: List[Tree]) =
@@ -746,7 +745,7 @@ trait Trees {
     def Ident(tree: Tree, name: Name) =
       new Ident(name) copyAttrs tree
     def RefTree(tree: Tree, qualifier: Tree, selector: Name) =
-      self.RefTree(qualifier, selector) copyAttrs tree
+      Trees.RefTree(qualifier, selector) copyAttrs tree
     def ReferenceToBoxed(tree: Tree, idt: Ident) =
       new ReferenceToBoxed(idt).copyAttrs(tree)
     def Literal(tree: Tree, value: Constant) =

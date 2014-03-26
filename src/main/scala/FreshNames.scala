@@ -5,14 +5,12 @@
 package cbc
 
 import cbc.util.FreshNameCreator
+import Names._, StdNames._
 
-trait FreshNames { self: Names with StdNames =>
+object FreshNames {
   // SI-6879 Keeps track of counters that are supposed to be globally unique
   //         as opposed to traditional freshers that are unique to compilation units.
-  val globalFreshNameCreator = new FreshNameCreator
-
-  // default fresh name creator used to abstract over currentUnit.fresh and runtime fresh name creator
-  def currentFreshNameCreator: FreshNameCreator
+  implicit val globalFreshNameCreator = new FreshNameCreator
 
   // create fresh term/type name using implicit fresh name creator
   def freshTermName(prefix: String = nme.FRESH_TERM_NAME_PREFIX)(implicit creator: FreshNameCreator): TermName = newTermName(creator.newName(prefix))

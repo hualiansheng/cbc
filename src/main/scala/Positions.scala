@@ -3,6 +3,7 @@ package cbc
 import util._
 import scala.collection.mutable.ListBuffer
 import scala.reflect.ClassTag
+import Trees._
 
 /** Handling range positions
  *  atPos, the main method in this trait, will add positions to a tree,
@@ -21,13 +22,10 @@ import scala.reflect.ClassTag
  *   If the node has a TransparentPosition, the solid descendants of all its children
  *   Otherwise, the singleton consisting of the node itself.
  */
-trait Positions { self: SymbolTable =>
-
+object Positions {
   type Position = cbc.util.Position
   val NoPosition = cbc.util.NoPosition
   implicit val PositionTag = ClassTag[Position](classOf[Position])
-
-  def inform(msg: String): Unit
 
   def useOffsetPositions: Boolean = true
 

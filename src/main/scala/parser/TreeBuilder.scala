@@ -6,29 +6,31 @@
 package cbc.parser
 
 import scala.collection.mutable.ListBuffer
+import cbc.{TreeGen, TreeInfo, nme, tpnme}
 import cbc.Flags._
+import cbc.Trees._
+import cbc.Constants._
+import cbc.Names._
+import cbc.FreshNames.{freshTermName, freshTypeName}
+import cbc.Positions._
 import cbc.util.{Position, SourceFile, FreshNameCreator}
 
 /** Methods for building trees, used in the parser.  All the trees
  *  returned by this class must be untyped.
  */
 abstract class TreeBuilder {
-  val global: cbc.SymbolTable
-  import global._
-
-  def unit: CompilationUnit
   def source: SourceFile
+  implicit def fresh: FreshNameCreator
 
-  implicit def fresh: FreshNameCreator              = unit.fresh
   def o2p(offset: Int): Position                    = Position.offset(source, offset)
   def r2p(start: Int, mid: Int, end: Int): Position = rangePos(source, start, mid, end)
 
-  def rootScalaDot(name: Name) = gen.rootScalaDot(name)
-  def scalaDot(name: Name)     = gen.scalaDot(name)
+  def rootScalaDot(name: Name) = TreeGen.rootScalaDot(name)
+  def scalaDot(name: Name)     = TreeGen.scalaDot(name)
   def scalaAnyRefConstr        = scalaDot(tpnme.AnyRef)
   def scalaUnitConstr          = scalaDot(tpnme.Unit)
 
-  def convertToTypeName(t: Tree) = gen.convertToTypeName(t)
+  def convertToTypeName(t: Tree) = TreeGen.convertToTypeName(t)
 
   def byNameApplication(tpe: Tree): Tree =
     AppliedTypeTree(rootScalaDot(tpnme.BYNAME_PARAM_CLASS_NAME), List(tpe))
@@ -38,9 +40,9 @@ abstract class TreeBuilder {
   def makeImportSelector(name: Name, nameOffset: Int): ImportSelector =
     ImportSelector(name, nameOffset, name, nameOffset)
 
-  def makeTupleTerm(elems: List[Tree]) = gen.mkTuple(elems)
+  def makeTupleTerm(elems: List[Tree]) = TreeGen.mkTuple(elems)
 
-  def makeTupleType(elems: List[Tree]) = gen.mkTupleType(elems)
+  def makeTupleType(elems: List[Tree]) = TreeGen.mkTupleType(elems)
 
   def stripParens(t: Tree) = t match {
     case Parens(ts) => atPos(t.pos) { makeTupleTerm(ts) }
@@ -61,13 +63,13 @@ abstract class TreeBuilder {
       def sel = atPos(opPos union t.pos)(Select(stripParens(t), op.encode))
       if (targs.isEmpty) sel else atPos(left.pos)(TypeApply(sel, targs))
     }
-    def mkNamed(args: List[Tree]) = if (isExpr) args map treeInfo.assignmentToMaybeNamedArg else args
+    def mkNamed(args: List[Tree]) = if (isExpr) args map TreeInfo.assignmentToMaybeNamedArg else args
     val arguments = right match {
       case Parens(args) => mkNamed(args)
       case _            => List(right)
     }
     if (isExpr) {
-      if (treeInfo.isLeftAssoc(op)) {
+      if (TreeInfo.isLeftAssoc(op)) {
         Apply(mkSelection(left), arguments)
       } else {
         val x = freshTermName()
@@ -106,7 +108,7 @@ abstract class TreeBuilder {
   }
 
   /** Create block of statements `stats`  */
-  def makeBlock(stats: List[Tree]): Tree = gen.mkBlock(stats)
+  def makeBlock(stats: List[Tree]): Tree = TreeGen.mkBlock(stats)
 
   def makeParam(pname: TermName, tpe: Tree) =
     ValDef(Modifiers(PARAM), pname, tpe, EmptyTree)
@@ -125,7 +127,7 @@ abstract class TreeBuilder {
 
   /** Create tree for case definition <case pat if guard => rhs> */
   def makeCaseDef(pat: Tree, guard: Tree, rhs: Tree): CaseDef =
-    CaseDef(gen.patvarTransformer.transform(pat), guard, rhs)
+    CaseDef(TreeGen.patvarTransformer.transform(pat), guard, rhs)
 
   /** Creates tree representing:
    *    { case x: Throwable =>
@@ -150,7 +152,7 @@ abstract class TreeBuilder {
   }
 
   /** Create a tree representing the function type (argtpes) => restpe */
-  def makeFunctionTypeTree(argtpes: List[Tree], restpe: Tree): Tree = gen.mkFunctionTypeTree(argtpes, restpe)
+  def makeFunctionTypeTree(argtpes: List[Tree], restpe: Tree): Tree = TreeGen.mkFunctionTypeTree(argtpes, restpe)
 
   /** Append implicit parameter section if `contextBounds` nonempty */
   def addEvidenceParams(owner: Name, vparamss: List[List[ValDef]], contextBounds: List[Tree]): List[List[ValDef]] = {
@@ -168,5 +170,5 @@ abstract class TreeBuilder {
     }
   }
 
-  def makePatDef(mods: Modifiers, pat: Tree, rhs: Tree) = gen.mkPatDef(mods, pat, rhs)
+  def makePatDef(mods: Modifiers, pat: Tree, rhs: Tree) = TreeGen.mkPatDef(mods, pat, rhs)
 }

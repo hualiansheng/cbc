@@ -5,17 +5,14 @@
 
 package cbc
 import cbc.Flags._
+import Trees._, Positions._, Names._, StdNames._
 
 /** This class ...
  *
  *  @author Martin Odersky
  *  @version 1.0
  */
-abstract class TreeInfo {
-  val global: SymbolTable
-
-  import global._
-
+object TreeInfo {
   def isEarlyDef(tree: Tree) = tree match {
     case TypeDef(mods, _, _, _) => mods hasFlag PRESUPER
     case ValDef(mods, _, _, _) => mods hasFlag PRESUPER

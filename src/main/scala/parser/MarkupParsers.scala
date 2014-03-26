@@ -11,6 +11,9 @@ import scala.util.control.ControlThrowable
 import cbc.parser.xml.{MarkupParserCommon, Utility}
 import cbc.util.CharArrayReader
 import cbc.util.Chars.{ SU, LF }
+import cbc.Positions._
+import cbc.Trees._
+import cbc.Constants._
 
 // XXX/Note: many/most of the functions in here are almost direct cut and pastes
 // from another file - scala.xml.parsing.MarkupParser, it looks like.
@@ -22,9 +25,7 @@ import cbc.util.Chars.{ SU, LF }
 // I rewrote most of these, but not as yet the library versions: so if you are
 // tempted to touch any of these, please be aware of that situation and try not
 // to let it get any worse.  -- paulp
-trait MarkupParsers {
-  self: Parsers =>
-
+trait MarkupParsers { self: Parsers =>
   case object MissingEndTagControl extends ControlThrowable {
     override def getMessage = "start tag was here: "
   }
@@ -36,8 +37,6 @@ trait MarkupParsers {
   case object TruncatedXMLControl extends ControlThrowable {
     override def getMessage = "input ended while parsing XML"
   }
-
-  import global._
 
   class MarkupParser(parser: SourceFileParser, final val preserveWS: Boolean) extends MarkupParserCommon {
     import Utility.{ isNameStart, isSpace }
