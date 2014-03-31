@@ -29,6 +29,7 @@ object SafeTree {
     final case class Char(value: scala.Char) extends Lit
     final case class String(value: Predef.String) extends Lit
     final case class Symbol(value: scala.Symbol) extends Lit
+    final case class Bool(value: scala.Boolean) extends Lit
     final case class Null() extends Lit
     final case class Unit() extends Lit
     final case class Ident(name: TermName) extends Ref

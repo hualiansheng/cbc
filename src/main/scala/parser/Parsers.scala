@@ -987,22 +987,22 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
      *                  | null
      *  }}}
      */
-    def literal(isNegated: Boolean = false, inPattern: Boolean = false, start: Offset = in.offset): Tree = atPos(start) {
-      def finish(value: Any): Tree = try newLiteral(value) finally in.nextToken()
-      if (in.token == SYMBOLLIT)
-        Apply(scalaDot(nme.Symbol), List(finish(in.strVal)))
-      else if (in.token == INTERPOLATIONID)
+    def literal(isNegated: Boolean = false, inPattern: Boolean = false, start: Offset = in.offset): SafeTree.Term = {
+      def finish(value: SafeTree.Term): SafeTree.Term = try value finally in.nextToken()
+      /*if (in.token == INTERPOLATIONID)
         interpolatedString(inPattern = inPattern)
-      else finish(in.token match {
-        case CHARLIT                => in.charVal
-        case INTLIT                 => in.intVal(isNegated).toInt
-        case LONGLIT                => in.intVal(isNegated)
-        case FLOATLIT               => in.floatVal(isNegated).toFloat
-        case DOUBLELIT              => in.floatVal(isNegated)
-        case STRINGLIT | STRINGPART => in.strVal.intern()
-        case TRUE                   => true
-        case FALSE                  => false
-        case NULL                   => null
+      else*/
+     finish(in.token match {
+        case CHARLIT                => SafeTree.Term.Char(in.charVal)
+        case INTLIT                 => SafeTree.Term.Int(in.intVal(isNegated).toInt)
+        case LONGLIT                => SafeTree.Term.Long(in.intVal(isNegated))
+        case FLOATLIT               => SafeTree.Term.Float(in.floatVal(isNegated).toFloat)
+        case DOUBLELIT              => SafeTree.Term.Double(in.floatVal(isNegated))
+        case STRINGLIT | STRINGPART => SafeTree.Term.String(in.strVal.intern())
+	case SYMBOLLIT              => SafeTree.Term.Symbol(scala.Symbol(in.strVal))
+        case TRUE                   => SafeTree.Term.Bool(true)
+        case FALSE                  => SafeTree.Term.Bool(false)
+        case NULL                   => SafeTree.Term.Null()
         case _                      => syntaxErrorOrIncompleteAnd("illegal literal", skipIt = true)(null)
       })
     }
