@@ -987,19 +987,18 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
      *                  | null
      *  }}}
      */
-    def literal(isNegated: Boolean = false, inPattern: Boolean = false, start: Offset = in.offset): SafeTree.Term = {
+    def literal(isNegated: Boolean = false, inPattern: Boolean = false, start: Offset = in.offset): Tree = {
       def finish(value: SafeTree.Term): SafeTree.Term = try value finally in.nextToken()
-      /*if (in.token == INTERPOLATIONID)
+      if (in.token == INTERPOLATIONID)
         interpolatedString(inPattern = inPattern)
-      else*/
-     finish(in.token match {
+      else finish(in.token match {
         case CHARLIT                => SafeTree.Term.Char(in.charVal)
         case INTLIT                 => SafeTree.Term.Int(in.intVal(isNegated).toInt)
         case LONGLIT                => SafeTree.Term.Long(in.intVal(isNegated))
         case FLOATLIT               => SafeTree.Term.Float(in.floatVal(isNegated).toFloat)
         case DOUBLELIT              => SafeTree.Term.Double(in.floatVal(isNegated))
         case STRINGLIT | STRINGPART => SafeTree.Term.String(in.strVal.intern())
-	case SYMBOLLIT              => SafeTree.Term.Symbol(scala.Symbol(in.strVal))
+        case SYMBOLLIT              => SafeTree.Term.Symbol(scala.Symbol(in.strVal))
         case TRUE                   => SafeTree.Term.Bool(true)
         case FALSE                  => SafeTree.Term.Bool(false)
         case NULL                   => SafeTree.Term.Null()

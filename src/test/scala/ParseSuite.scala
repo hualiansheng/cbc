@@ -1,5 +1,6 @@
 package cbc
 import org.scalatest.FunSuite
+import SafeTree._
 
 class ParseSuite extends FunSuite {
   def parse(code: String): cbc.Trees.Tree = {
@@ -11,7 +12,7 @@ class ParseSuite extends FunSuite {
   def parseExpr(code: String): cbc.Trees.Tree = {
     val source = new cbc.util.BatchSourceFile("", code)
     val parser = new cbc.parser.Parsers.SourceFileParser(source)
-    parser.parseRule(_ => parser.expr())
+    parser.parseRule(_.expr())
   }
 
   test("parse `42`") {
@@ -44,6 +45,10 @@ class ParseSuite extends FunSuite {
 
   test("parse `true`") {
     val SafeTree.Term.Bool(true) = parseExpr("true")
+  }
+
+  test("parse `false`") {
+    val SafeTree.Term.Bool(false) = parseExpr("false")
   }
 
   test("parse `null`") {
