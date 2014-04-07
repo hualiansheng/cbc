@@ -34,12 +34,13 @@ object SafeTree {
     final case class Unit() extends Lit
     final case class Ident(name: TermName) extends Ref
     // ??? see below
-    final case class Select(qual: Term.Ref, name: TermName) extends Ref
+    final case class Select(qual: Term, name: TermName) extends Ref
     // ??? qual and supertyp can be empty. @xeno-by: what do you mean qual can be empty?
     final case class SuperSelect(qual: TypeName, supertyp: TypeName, selector: TermName) extends Ref
     final case class This(qual: TypeName) extends Term
     // ??? named and default args
     final case class Apply(fun: Term, args: List[Term]) extends Term
+    //TODO
     final case class TypeApply(fun: Term, args: List[Type]) extends Term
     final case class Assign(lhs: Term.Ref, rhs: Term) extends Term
     // ??? List[List[Term]]. @xeno-by: scalac allows multiple argument lists for update
@@ -62,6 +63,9 @@ object SafeTree {
     final case class For(enums: List[Enumerator], body: Term) extends Term
     final case class ForYield(enums: List[Enumerator], body: Term) extends Term
     final case class New(templ: Template) extends Term
+    final case class Interpolated(interpolator: TermName, parts: List[Term.String], args: List[Term])
+    // interpolator"foo $bar baz"
+    // StringContext("foo ", " baz").interpolator(bar)
   }
 
   sealed trait Pat extends SafeTree

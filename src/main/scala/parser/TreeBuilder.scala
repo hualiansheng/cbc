@@ -14,6 +14,7 @@ import cbc.Names._
 import cbc.FreshNames.{freshTermName, freshTypeName}
 import cbc.Positions._
 import cbc.util.{Position, SourceFile, FreshNameCreator}
+import cbc.SafeTree
 
 /** Methods for building trees, used in the parser.  All the trees
  *  returned by this class must be untyped.
@@ -49,6 +50,11 @@ abstract class TreeBuilder {
     case _ => t
   }
 
+  def stripParens(t: cbc.SafeTree.Term) = t match {
+    //case cbc.SafeTree.Parent(ts) => cbc.SafeTree.Term.Tuple(ts)
+    case _ => t
+  }
+
   def makeAnnotated(t: Tree, annot: Tree): Tree =
     atPos(annot.pos union t.pos)(Annotated(annot, t))
 
@@ -56,6 +62,7 @@ abstract class TreeBuilder {
     ValDef(Modifiers(PRIVATE), name, tpt, EmptyTree)
 
   /** Create tree representing (unencoded) binary operation expression or pattern. */
+/*  
   def makeBinop(isExpr: Boolean, left: Tree, op: TermName, right: Tree, opPos: Position, targs: List[Tree] = Nil): Tree = {
     require(isExpr || targs.isEmpty || targs.exists(_.isErroneous), s"Incompatible args to makeBinop: !isExpr but targs=$targs")
 
@@ -81,6 +88,34 @@ abstract class TreeBuilder {
       Apply(Ident(op.encode), stripParens(left) :: arguments)
     }
   }
+*/  
+  def makeBinop(isExpr: Boolean, left: SafeTree.Term, op: TermName, right: SafeTree.Term, targs: List[SafeTree.Type] = Nil): SafeTree.Term = {
+    require(isExpr || targs.isEmpty || targs.exists(_.isErroneous), s"Incompatible args to makeBinop: !isExpr but targs=$targs")
+
+    def mkSelection(t: SafeTree.Term) = {
+      def sel = SafeTree.Term.Select(stripParens(t), op.encode)
+      if (targs.isEmpty) sel else SafeTree.Term.TypeApply(sel, targs)
+    }
+    //def mkNamed(args: List[Tree]) = if (isExpr) args map TreeInfo.assignmentToMaybeNamedArg else args
+    val arguments = right match {
+      //case Parens(args) => mkNamed(args)
+      case _            => List(right)
+    }
+    if (isExpr) {
+      if (TreeInfo.isLeftAssoc(op)) {
+        SafeTree.Term.Apply(mkSelection(left), arguments)
+      } else {
+        /*val x = freshTermName()
+        SafeTree.Term.Block(
+          List(ValDef(Modifiers(SYNTHETIC | ARTIFACT), x, TypeTree(), stripParens(left))),
+          SafeTree.Term.Apply(mkSelection(right), List(SafeTree.Term.Ident(x))))*/
+        SafeTree.Term.Empty()
+      }
+    } else {
+      SafeTree.Term.Apply(SafeTree.Term.Ident(op.encode), stripParens(left) :: arguments)
+    }
+  }
+
 
   /** Tree for `od op`, start is start0 if od.pos is borked. */
   def makePostfixSelect(start0: Int, end: Int, od: Tree, op: Name): Tree = {
