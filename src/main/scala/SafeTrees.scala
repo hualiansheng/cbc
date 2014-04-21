@@ -18,7 +18,7 @@ object SafeTree {
   object Term {
     // ??? bad practice: this violates safety by construction
     // currently used in val, var, def, try, case guard
-    final case class Empty() extends Term
+    final case object Empty extends Term
     sealed trait Ref extends Term with SafeTree.Ref
     sealed trait Lit extends Term
 
@@ -32,7 +32,9 @@ object SafeTree {
     final case class Bool(value: scala.Boolean) extends Lit
     final case class Null() extends Lit
     final case class Unit() extends Lit
-    final case class Ident(name: TermName) extends Ref
+    final case class Ident(name: TermName) extends Ref {
+      var isBackquoted: Boolean = false
+    }
     // ??? see below
     final case class Select(qual: Term, name: TermName) extends Ref
     // ??? qual and supertyp can be empty. @xeno-by: what do you mean qual can be empty?
@@ -70,18 +72,28 @@ object SafeTree {
 
   sealed trait Pat extends SafeTree
   object Pat {
+    final case object Empty extends Pat
     final case class Wildcard() extends Pat
     // ??? Ident vs Bind + Type
     // ??? Ascription
     // ??? :_* @xeno-by: again, I suggest we have a separate tree for varargs
     final case class Alt(left: Pat, right: Pat) extends Pat
     final case class Tuple(elements: List[Pat]) extends Pat
-    final case class Extractor(ref: Term.Ref, elements: List[Pat]) extends Pat
+    final case class Extractor(ref: Term, elements: List[Pat]) extends Pat
+    // not sure whether needed
+    final case class Lit(value: Term) extends Pat
+    final case class Ident(value: Term) extends Pat
+    final case class Typed(expr: Term, tpt: Type) extends Pat
+    final case class Bind(name: Term, body: Pat) extends Pat
+
   }
 
   sealed trait Type extends SafeTree
   object Type {
     sealed trait Ref extends Type with SafeTree.Ref
+    //temperary empty type
+    final case object Empty extends Type
+
     final case class Ident(name: TypeName) extends Ref
     final case class Select(qual: SafeTree.Ref, name: TypeName) extends Ref
 

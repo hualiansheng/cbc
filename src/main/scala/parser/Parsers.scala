@@ -89,6 +89,21 @@ trait ParsersCommon extends ScannersCommon { self =>
      */
     @inline final def makeParens(body: => List[Tree]): Parens =
       Parens(inParens(if (in.token == RPAREN) Nil else body))
+    
+    @inline final def makeTupleTerm(body: => List[SafeTree.Term]): SafeTree.Term = {
+      inParens(if (in.token == RPAREN) Nil else body) match {
+        case e::Nil => e
+        case t => SafeTree.Term.Tuple(t)
+      }
+    }
+
+    @inline final def makeTuplePat(body: => List[SafeTree.Pat]): SafeTree.Pat = {
+      inParens(if (in.token == RPAREN) Nil else body) match {
+        case Nil => SafeTree.Pat.Empty
+        case e::Nil => e
+        case t => SafeTree.Pat.Tuple(t)
+      }
+    }
   }
 }
 
@@ -628,7 +643,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
       if (opinfo.targs.nonEmpty)
         syntaxError(opinfo.offset, "type application is not allowed for postfix operators")
 
-      val od = stripParens(reduceExprStack(base, opinfo.lhs))
+      val od = reduceExprStack(base, opinfo.lhs)
       //makePostfixSelect(start, opinfo.offset, od, opinfo.operator)
       SafeTree.Term.Select(od, opinfo.operator.encode)
     }
@@ -772,7 +787,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
           case LPAREN   => atPos(start)(makeTupleType(inParens(types())))
           case USCORE   => wildcardType(in.skipToken())
           case _        =>
-            path(thisOK = false, typeOK = true) match {
+            pathEmpty(thisOK = false, typeOK = true) match {
               case r @ SingletonTypeTree(_) => r
               case r => convertToTypeId(r)
             }
@@ -879,14 +894,16 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
 
     def identOrMacro(): Name = if (isMacro) rawIdent() else ident()
 
-    def selector(t: Tree): Tree = {
+    def selector(t: SafeTree.Term): SafeTree.Term = {
       val point = in.offset
       //assert(t.pos.isDefined, t)
-      if (t != EmptyTree)
-        Select(t, ident(skipIt = false)) setPos r2p(t.pos.start, point, in.lastOffset)
+      if (t != SafeTree.Term.Empty)
+        SafeTree.Term.Select(t, ident(skipIt = false).toTermName)
       else
-        errorTermTree // has already been reported
+        SafeTree.Term.Empty
     }
+    
+    def selectorEmpty(t: Tree): Tree = EmptyTree
 
     /** {{{
      *  Path       ::= StableId
@@ -894,26 +911,28 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
      *  AnnotType ::= Path [`.' type]
      *  }}}
      */
-    def path(thisOK: Boolean, typeOK: Boolean): Tree = {
+    def pathEmpty(thisOK: Boolean, typeOK: Boolean): Tree = EmptyTree
+
+    def path(thisOK: Boolean, typeOK: Boolean): SafeTree.Term = {
       val start = in.offset
-      var t: Tree = null
+      var t: SafeTree.Term = null
       if (in.token == THIS) {
         in.nextToken()
-        t = atPos(start) { This(tpnme.EMPTY) }
+        t = SafeTree.Term.This(tpnme.EMPTY)
         if (!thisOK || in.token == DOT) {
           t = selectors(t, typeOK, accept(DOT))
         }
       } else if (in.token == SUPER) {
         in.nextToken()
-        t = atPos(start) { Super(This(tpnme.EMPTY), mixinQualifierOpt()) }
+        val classQual = mixinQualifierOpt()
         accept(DOT)
-        t = selector(t)
+        t = SafeTree.Term.SuperSelect(tpnme.EMPTY, classQual, ident(skipIt=false).toTermName)
         if (in.token == DOT) t = selectors(t, typeOK, in.skipToken())
       } else {
         val tok = in.token
         val name = ident()
-        t = atPos(start) {
-          val id = Ident(name)
+        t = {
+          val id = SafeTree.Term.Ident(name.toTermName)
           if (tok == BACKQUOTED_IDENT) id.isBackquoted = true
           id
         }
@@ -921,14 +940,14 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
           val dotOffset = in.skipToken()
           if (in.token == THIS) {
             in.nextToken()
-            t = atPos(start) { This(name.toTypeName) }
+            t = SafeTree.Term.This(name.toTypeName)
             if (!thisOK || in.token == DOT)
               t = selectors(t, typeOK, accept(DOT))
           } else if (in.token == SUPER) {
             in.nextToken()
-            t = atPos(start) { Super(This(name.toTypeName), mixinQualifierOpt()) }
+            val classQual = mixinQualifierOpt()
             accept(DOT)
-            t = selector(t)
+            t = SafeTree.Term.SuperSelect(name.toTypeName, classQual, ident(skipIt=false).toTermName)
             if (in.token == DOT) t = selectors(t, typeOK, in.skipToken())
           } else {
             t = selectors(t, typeOK, dotOffset)
@@ -938,16 +957,17 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
       t
     }
 
-    def selectors(t: Tree, typeOK: Boolean, dotOffset: Offset): Tree =
-      if (typeOK && in.token == TYPE) {
+    def selectors(t: SafeTree.Term, typeOK: Boolean, dotOffset: Offset): SafeTree.Term = {
+      // TODO need another selector method for type
+      /*if (typeOK && in.token == TYPE) {
         in.nextToken()
         atPos(t.pos.start, dotOffset) { SingletonTypeTree(t) }
       }
-      else {
-        val t1 = selector(t)
-        if (in.token == DOT) { selectors(t1, typeOK, in.skipToken()) }
-        else t1
-      }
+      else {*/
+      val t1 = selector(t)
+      if (in.token == DOT) { selectors(t1, typeOK, in.skipToken()) }
+      else t1
+    }
 
     /** {{{
     *   MixinQualifier ::= `[' Id `]'
@@ -963,16 +983,16 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
      *            |  [id `.'] super [`[' id `]']`.' id
      *  }}}
      */
-    def stableId(): Tree =
+    def stableId(): SafeTree.Term =
       path(thisOK = false, typeOK = false)
 
     /** {{{
     *   QualId ::= Id {`.' Id}
     *   }}}
     */
-    def qualId(): Tree = {
+    def qualId(): SafeTree.Term = {
       val start = in.offset
-      val id = atPos(start) { Ident(ident()) }
+      val id = SafeTree.Term.Ident(ident().toTermName)
       if (in.token == DOT) { selectors(id, typeOK = false, in.skipToken()) }
       else id
     }
@@ -1187,7 +1207,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
           newLinesOpt()
           val thenp = expr()
           val elsep = if (in.token == ELSE) { in.nextToken(); expr() }
-          else SafeTree.Term.Empty()
+          else SafeTree.Term.Empty
           SafeTree.Term.If(cond, thenp, elsep)
         }
         parseIf
@@ -1326,7 +1346,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
               Function(convertToParams(t), if (location != InBlock) expr() else block())
             }
           }*/
-          stripParens(t)
+          t
         }
         parseOther
     }
@@ -1370,7 +1390,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
         newLineOptWhenFollowing(isExprIntroToken)
         if (isExprIntro)
           prefixExpr() match {
-            case SafeTree.Term.Empty() => reduceExprStack(base, top)
+            case SafeTree.Term.Empty => reduceExprStack(base, top)
             case next      => loop(next)
           }
         else finishPostfixOp(start, base, popOpInfo())
@@ -1410,18 +1430,18 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
      */
     def simpleExpr(): SafeTree.Term = {
       var canApply = true
-      /*val t =
+      val t =
         if (isLiteral) literal()
         else in.token match {
-          case XMLSTART =>
+          /*case XMLSTART =>
             xmlLiteral()
           case IDENTIFIER | BACKQUOTED_IDENT | THIS | SUPER =>
             path(thisOK = true, typeOK = false)
           case USCORE =>
-            freshPlaceholder()
+            freshPlaceholder()*/
           case LPAREN =>
-            atPos(in.offset)(makeParens(commaSeparated(expr())))
-          case LBRACE =>
+            makeTupleTerm(commaSeparated(expr()))
+          /*case LBRACE =>
             canApply = false
             blockExpr()
           case NEW =>
@@ -1431,12 +1451,12 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
             val tstart = in.offset
             val (parents, self, stats) = template()
             val cpos = r2p(tstart, tstart, in.lastOffset max tstart)
-            TreeGen.mkNew(parents, self, stats, npos, cpos)
+            TreeGen.mkNew(parents, self, stats, npos, cpos)*/
           case _ =>
-            syntaxErrorOrIncompleteAnd("illegal start of simple expression", skipIt = true)(errorTermTree)
+            syntaxErrorOrIncompleteAnd("illegal start of simple expression", skipIt = true)(SafeTree.Term.Null())
         }
-      simpleExprRest(t, canApply = canApply)*/
-      literal()
+      //simpleExprRest(t, canApply = canApply)
+      t
     }
 
     def simpleExprRest(t: Tree, canApply: Boolean): Tree = {
@@ -1444,7 +1464,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
       in.token match {
         case DOT =>
           in.nextToken()
-          simpleExprRest(selector(stripParens(t)), canApply = true)
+          simpleExprRest(selectorEmpty(stripParens(t)), canApply = true)
         case LBRACKET =>
           val t1 = stripParens(t)
           t1 match {
@@ -1544,7 +1564,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
      */
     def guard(): SafeTree.Enumerator = {
       in.nextToken()
-      SafeTree.Enumerator.Guard(stripParens(postfixExpr()))
+      SafeTree.Enumerator.Guard(postfixExpr())
     }
 
     /** {{{
@@ -1643,22 +1663,22 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
        *  SeqPatterns ::= SeqPattern { `,' SeqPattern }
        *  }}}
        */
-      def patterns(): List[Tree] = commaSeparated(pattern())
+      def patterns(): List[SafeTree.Pat] = commaSeparated(pattern())
 
       /** {{{
        *  Pattern  ::=  Pattern1 { `|' Pattern1 }
        *  SeqPattern ::= SeqPattern1 { `|' SeqPattern1 }
        *  }}}
        */
-      def pattern(): Tree = {
+      def pattern(): SafeTree.Pat = {
         val start = in.offset
-        def loop(): List[Tree] = pattern1() :: {
+        def loop(): List[SafeTree.Pat] = pattern1() :: {
           if (isRawBar) { in.nextToken() ; loop() }
           else Nil
         }
         loop() match {
           case pat :: Nil => pat
-          case xs         => atPos(start)(makeAlternative(xs))
+          case xs         => makeAlternative(xs)
         }
       }
 
@@ -1671,14 +1691,21 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
        *                |  [SeqPattern2]
        *  }}}
        */
-      def pattern1(): Tree = pattern2() match {
-        case p @ Ident(name) if in.token == COLON =>
-          if (TreeInfo.isVarPattern(p))
-            atPos(p.pos.start, in.skipToken())(Typed(p, compoundType()))
+      def pattern1(): SafeTree.Pat = pattern2() match {
+        //TODO empty type
+        case p @ SafeTree.Pat.Ident(t) if in.token == COLON =>
+          if (TreeInfo.isVarPattern(t)) {
+            //atPos(p.pos.start, in.skipToken())(Typed(p, compoundType()))
+            in.skipToken()
+            //TODO change empty type to compoundType
+            SafeTree.Pat.Typed(t, SafeTree.Type.Empty)
+          }
           else {
             syntaxError(in.offset, "Pattern variables must start with a lower-case letter. (SLS 8.1.1.)")
             p
           }
+        //TODO empty term and type
+        case SafeTree.Pat.Wildcard() => SafeTree.Pat.Typed(SafeTree.Term.Empty, SafeTree.Type.Empty)
         case p => p
       }
 
@@ -1689,17 +1716,17 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
        *                |   SeqPattern3
        *  }}}
        */
-      def pattern2(): Tree = {
+      def pattern2(): SafeTree.Pat = {
         val p = pattern3()
 
         if (in.token != AT) p
         else p match {
-          case Ident(nme.WILDCARD) =>
+          case SafeTree.Pat.Wildcard() =>
             in.nextToken()
             pattern3()
-          case Ident(name) if TreeInfo.isVarPattern(p) =>
+          case SafeTree.Pat.Ident(t) if TreeInfo.isVarPattern(p) =>
             in.nextToken()
-            atPos(p.pos.start) { Bind(name, pattern3()) }
+            SafeTree.Pat.Bind(t, pattern3())
           case _ => p
         }
       }
@@ -1709,7 +1736,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
        *                |  SimplePattern {Id [nl] SimplePattern}
        *  }}}
        */
-      def pattern3(): Tree = {
+      def pattern3(): SafeTree.Pat = {
         val top = simplePattern(badPattern3)
         val base = opstack
         // See SI-3189, SI-4832 for motivation. Cf SI-3480 for counter-motivation.
@@ -1718,6 +1745,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
           case RPAREN => !isXML
           case _      => false
         }
+        /* TODO don't understand
         def checkWildStar: Tree = top match {
           case Ident(nme.WILDCARD) if isSequenceOK && isRawStar => peekingAhead (
             if (isCloseDelim) atPos(top.pos.start, in.prev.offset)(Star(stripParens(top)))
@@ -1725,11 +1753,14 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
           )
           case _ => EmptyTree
         }
+        */
+        /* TODO separate term and pattern reduce stack
         def loop(top: Tree): Tree = reducePatternStack(base, top) match {
           case next if isIdentExcept(raw.BAR) => pushOpInfo(next) ; loop(simplePattern(badPattern3))
           case next                           => next
-        }
-        checkWildStar orElse stripParens(loop(top))
+        }*/
+        //checkWildStar orElse loop(top)
+        top
       }
 
       def badPattern3(): Tree = {
@@ -1770,11 +1801,11 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
        *
        * XXX: Hook for IDE
        */
-      def simplePattern(): Tree = (
+      def simplePattern(): SafeTree.Pat = (
         // simple diagnostics for this entry point
         simplePattern(() => syntaxErrorOrIncompleteAnd("illegal start of simple pattern", skipIt = true)(errorPatternTree))
       )
-      def simplePattern(onError: () => Tree): Tree = {
+      def simplePattern(onError: () => Tree): SafeTree.Pat = {
         val start = in.offset
         in.token match {
           case IDENTIFIER | BACKQUOTED_IDENT | THIS =>
@@ -1782,32 +1813,36 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
             in.token match {
               case INTLIT | LONGLIT | FLOATLIT | DOUBLELIT =>
                 t match {
-                  case Ident(nme.MINUS) =>
-                    return literal(isNegated = true, inPattern = true, start = start)
+                  case SafeTree.Term.Ident(nme.MINUS) =>
+                    return SafeTree.Pat.Lit(literal(isNegated = true, inPattern = true, start = start))
                   case _ =>
                 }
               case _ =>
             }
+            /* TODO
             val typeAppliedTree = in.token match {
               case LBRACKET   => atPos(start, in.offset)(AppliedTypeTree(convertToTypeId(t), typeArgs()))
               case _          => t
             }
+            */
             in.token match {
-              case LPAREN   => atPos(start, in.offset)(Apply(typeAppliedTree, argumentPatterns()))
-              case _        => typeAppliedTree
+              case LPAREN   => SafeTree.Pat.Extractor(t, argumentPatterns())
+              //case _        => typeAppliedTree
+              case _        => SafeTree.Pat.Ident(t)
             }
           case USCORE =>
             in.nextToken()
-            atPos(start, start) { Ident(nme.WILDCARD) }
+            SafeTree.Pat.Wildcard()
           case CHARLIT | INTLIT | LONGLIT | FLOATLIT | DOUBLELIT |
                STRINGLIT | INTERPOLATIONID | SYMBOLLIT | TRUE | FALSE | NULL =>
-            literal(inPattern = true)
+            SafeTree.Pat.Lit(literal(inPattern = true))
           case LPAREN =>
-            atPos(start)(makeParens(noSeq.patterns()))
+            makeTuplePat(noSeq.patterns())
+          /*TODO
           case XMLSTART =>
             xmlLiteralPattern()
           case _ =>
-            onError()
+            onError()*/
         }
       }
     }
@@ -1840,9 +1875,9 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
 
     /** Default entry points into some pattern contexts. */
     def pattern(): Tree = noSeq.pattern()
-    def seqPatterns(): List[Tree] = seqOK.patterns()
+    def seqPatterns(): List[SafeTree.Pat] = seqOK.patterns()
     def xmlSeqPatterns(): List[Tree] = xmlSeqOK.patterns() // Called from xml parser
-    def argumentPatterns(): List[Tree] = inParens {
+    def argumentPatterns(): List[SafeTree.Pat] = inParens {
       if (in.token == RPAREN) Nil
       else seqPatterns()
     }
@@ -2182,7 +2217,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
         in.nextToken()
         val t = atPos(start)(This(name))
         accept(DOT)
-        val result = selector(t)
+        val result = selectorEmpty(t)
         accept(DOT)
         result
       }

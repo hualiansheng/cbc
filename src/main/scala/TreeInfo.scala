@@ -110,7 +110,7 @@ object TreeInfo {
 
   /** Is tree a variable pattern? */
   def isVarPattern(pat: Tree): Boolean = pat match {
-    case x: Ident           => !x.isBackquoted && nme.isVariableName(x.name)
+    case x: SafeTree.Term.Ident           => !x.isBackquoted && nme.isVariableName(x.name)
     case _                  => false
   }
 

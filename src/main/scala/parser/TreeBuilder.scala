@@ -50,11 +50,6 @@ abstract class TreeBuilder {
     case _ => t
   }
 
-  def stripParens(t: cbc.SafeTree.Term) = t match {
-    //case cbc.SafeTree.Parent(ts) => cbc.SafeTree.Term.Tuple(ts)
-    case _ => t
-  }
-
   def makeAnnotated(t: Tree, annot: Tree): Tree =
     atPos(annot.pos union t.pos)(Annotated(annot, t))
 
@@ -93,7 +88,7 @@ abstract class TreeBuilder {
     require(isExpr || targs.isEmpty || targs.exists(_.isErroneous), s"Incompatible args to makeBinop: !isExpr but targs=$targs")
 
     def mkSelection(t: SafeTree.Term) = {
-      def sel = SafeTree.Term.Select(stripParens(t), op.encode)
+      def sel = SafeTree.Term.Select(t, op.encode)
       if (targs.isEmpty) sel else SafeTree.Term.TypeApply(sel, targs)
     }
     //def mkNamed(args: List[Tree]) = if (isExpr) args map TreeInfo.assignmentToMaybeNamedArg else args
@@ -109,10 +104,10 @@ abstract class TreeBuilder {
         SafeTree.Term.Block(
           List(ValDef(Modifiers(SYNTHETIC | ARTIFACT), x, TypeTree(), stripParens(left))),
           SafeTree.Term.Apply(mkSelection(right), List(SafeTree.Term.Ident(x))))*/
-        SafeTree.Term.Empty()
+        SafeTree.Term.Empty
       }
     } else {
-      SafeTree.Term.Apply(SafeTree.Term.Ident(op.encode), stripParens(left) :: arguments)
+      SafeTree.Term.Apply(SafeTree.Term.Ident(op.encode), left :: arguments)
     }
   }
 
@@ -152,12 +147,8 @@ abstract class TreeBuilder {
     TypeDef(Modifiers(DEFERRED | SYNTHETIC), pname, Nil, bounds)
 
   /** Create tree for a pattern alternative */
-  def makeAlternative(ts: List[Tree]): Tree = {
-    def alternatives(t: Tree): List[Tree] = t match {
-      case Alternative(ts)  => ts
-      case _                => List(t)
-    }
-    Alternative(ts flatMap alternatives)
+  def makeAlternative(ts: List[SafeTree.Pat]): SafeTree.Pat = {
+    ts.reduceRight(SafeTree.Pat.Alt(_,_))
   }
 
   /** Create tree for case definition <case pat if guard => rhs> */
