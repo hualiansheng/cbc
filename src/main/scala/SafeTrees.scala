@@ -1,27 +1,27 @@
 package cbc
 
-import Names._
+import scala.language.existentials
+import scala.language.implicitConversions
+import shapeless._
+import Conversions._
 
-sealed abstract class SafeTree extends Trees.Tree {
-  // ??? trivia: whitespace, comments, etc
-  // http://msdn.microsoft.com/en-us/vstudio/hh500769
-  // ??? history vs positions
-  // ??? other stuff
-  // https://docs.google.com/document/d/1CowAbpDOcyJyK8mECmEgel08lgmPcDCNnxAvcfudnf0/edit
-}
-
+sealed abstract class SafeTree
 object SafeTree {
-  // ??? @xeno-by: do we really need to have this trait
   sealed trait Ref extends SafeTree
 
-  sealed trait Term extends SafeTree
+  sealed trait Term extends SafeTree with BlockStmt with TemplateStmt
   object Term {
-    // ??? bad practice: this violates safety by construction
-    // currently used in val, var, def, try, case guard
     final case object Empty extends Term
-    sealed trait Ref extends Term with SafeTree.Ref
-    sealed trait Lit extends Term
+    sealed trait Ref extends Term
+    sealed trait PostfixExpr extends Term
+    sealed trait SimpleExpr extends PostfixExpr
+    sealed trait SimpleExpr1 extends SimpleExpr
+    sealed trait WildIdent extends SimpleExpr1
 
+    sealed trait Lit extends Term.SimpleExpr1 with Pat.SimplePattern
+    sealed trait Bool extends Lit
+    final case class True() extends Bool
+    final case class False() extends Bool
     final case class Int(value: scala.Int) extends Lit
     final case class Long(value: scala.Long) extends Lit
     final case class Float(value: scala.Float) extends Lit
@@ -29,284 +29,279 @@ object SafeTree {
     final case class Char(value: scala.Char) extends Lit
     final case class String(value: Predef.String) extends Lit
     final case class Symbol(value: scala.Symbol) extends Lit
-    final case class Bool(value: scala.Boolean) extends Lit
     final case class Null() extends Lit
     final case class Unit() extends Lit
-    final case class Ident(name: TermName) extends Ref {
-      var isBackquoted: Boolean = false
+
+    trait StableId[T]
+    object StableId {
+      implicit object IdentStableId extends StableId[Term.Ident]
+      implicit def selectStableId[P <: Term : Path]: StableId[Select[P]] = new StableId[Select[P]] {}
+      implicit object SuperSelectStableId extends StableId[SuperSelect]
     }
-    // ??? see below
-    final case class Select(qual: Term, name: TermName) extends Ref
-    // ??? qual and supertyp can be empty. @xeno-by: what do you mean qual can be empty?
-    final case class SuperSelect(qual: TypeName, supertyp: TypeName, selector: TermName) extends Ref
-    final case class This(qual: TypeName) extends Term
-    // ??? named and default args
-    final case class Apply(fun: Term, args: List[Term]) extends Term
-    //TODO
-    final case class TypeApply(fun: Term, args: List[Type]) extends Term
-    final case class Assign(lhs: Term.Ref, rhs: Term) extends Term
-    // ??? List[List[Term]]. @xeno-by: scalac allows multiple argument lists for update
-    final case class Update(expr: Term, args: List[Term]) extends Term
+
+    trait Path[T]
+    object Path {
+      implicit object IdentPath extends Path[Term.Ident]
+      implicit def selectPath[P <: Term : Path]: Path[Select[P]] = new Path[Select[P]] {}
+      implicit object SuperSelectPath extends Path[SuperSelect]
+      implicit object ThisPath extends Path[This]
+    }
+
+    final case class Ident(name: ValidId) extends Ref with WildIdent with Pat.SimplePattern
+    //final case class VarIdent(name: VarId) extends Ref with WildIdent
+    final case class Select[T <: Term](qual: T, name: Term.Ident) extends Ref with SimpleExpr1
+    final case class SuperSelect(qual: Option[Type.Ident], supertyp: Option[Type.Ident], selector: Term.Ident) extends Ref with SimpleExpr1
+    final case class This(qual: Option[Type.Ident]) extends Ref with SimpleExpr1
+    final case class Placeholder() extends WildIdent
+    //TODO length of elements >= 2
+    final case class Tuple(elements: List[Term]) extends SimpleExpr1
+    final case class Apply[T : ArgExpr](fun: Term, args: T) extends SimpleExpr1
+    final case class ApplyInfix(lhs: Term, op: Term.Ident, rhs: Term) extends PostfixExpr
+    //TODO unary op only
+    final case class ApplyPrefix(op: Term.Ident, arg: Term) extends PostfixExpr
+    final case class ApplyPostfix(arg: Term, op: Term.Ident) extends PostfixExpr
+    final case class TypeApply(fun: Term, args: List[Type]) extends SimpleExpr1
+    final case class Eta(meth: Term) extends SimpleExpr
+
+    //TODO result not correct
+    final case class Block(stats: List[BlockStmt], result: Option[Term]) extends SimpleExpr
+    sealed trait LegalNew[T]
+    object LegalNew {
+      implicit object ClassTemplateNew extends LegalNew[ClassTemplate]
+      implicit object TemplateBodyNew extends LegalNew[List[TemplateStmt]]
+    }
+    final case class New[T : LegalNew](templ: T) extends SimpleExpr
+    final case class CaseClauses(first: Case, rest: List[Case]) extends SimpleExpr
+
+    final case class If(cond: Term, thenp: Term, elsep: Option[Term]) extends Term
+    final case class Match(scrut: Term, cases: CaseClauses) extends Term
+    final case class Assign(lhs: Select[_ <: Term], rhs: Term) extends Term
+    final case class Update[T : ArgExpr](expr: Term, args: T) extends Term
     final case class Return(expr: Term) extends Term
     final case class Throw(expr: Term) extends Term
-    // ??? what about _*? @xeno-by: I suggest we have a separate tree for that
-    final case class Ascribe(expr: Term, typ: Type) extends Term
-    final case class Annotate(expr: Term, annots: Annots.Term) extends Term
-    final case class Tuple(elements: List[Term]) extends Term
-    // ??? blocks only allow Term, nested definitions and imports. how do we express that?
-    final case class Block(stats: List[SafeTree]) extends Term
-    final case class If(cond: Term, `then`: Term, `else`: Term) extends Term
-    final case class Match(scrut: Term, cases: List[Case]) extends Term
-    final case class Try(expr: Term, `catch`: List[Case], `finally`: Term) extends Term
-    final case class Function(params: List[FunctionParam], body: Term) extends Term
-    final case class PartialFunction(cases: List[Case]) extends Term
+    final case class Typed(expr: Term, typ: Type.InfixType) extends Term
+    //TODO length of annots >= 1
+    final case class Annotated(expr: Term, annots: List[Annotation]) extends Term
+    final case class ExprRepeatedArgs(expr: Term) extends Term
+    final case class Try(expr: Block, catchp: Option[CaseClauses], finallyp: Option[Term]) extends Term
+    final case class Binding(term: WildIdent, typ: Option[Type])
+    //TODO length of param >= 1
+    final case class Function(param: List[Binding], body: Term) extends Term
+    final case class ImplicitFunction(param: Term.Ident, body: Term) extends Term
+    //final case class PartialFunction(cases: List[Case]) extends Term
     final case class While(expr: Term, body: Term) extends Term
-    final case class Do(body: Term, expr: Term) extends Term
-    final case class For(enums: List[Enumerator], body: Term) extends Term
-    final case class ForYield(enums: List[Enumerator], body: Term) extends Term
-    final case class New(templ: Template) extends Term
-    final case class Interpolated(interpolator: TermName, parts: List[Term.String], args: List[Term])
-    // interpolator"foo $bar baz"
-    // StringContext("foo ", " baz").interpolator(bar)
+    final case class DoWhile(body: Term, expr: Term) extends Term
+    final case class For(headEnum: Enumerator.Generator, tailEnums: List[Enumerator], body: Term) extends Term
+    final case class ForYield(headEnum: Enumerator.Generator, tailEnums: List[Enumerator], body: Term) extends Term
+    //final case class Interpolated(interpolator: TermName, parts: List[Term.String], args: List[Term])
+  }
+
+  sealed trait Type extends SafeTree with Param.ParamType
+  object Type {
+    sealed trait Ref extends Type with SafeTree.Ref
+    //temperary empty type
+    final case object Empty extends Type
+    sealed trait SimpleType extends Type
+    sealed trait WildIdent extends SimpleType
+
+    final case class Ident(name: ValidId) extends WildIdent
+    final case class Select[P: Term.Path](qual: P, name: Type.Ident) extends SimpleType
+    final case class SuperSelect(qual: Option[Type.Ident], supertyp: Option[Type.Ident], selector: Type.Ident) extends SimpleType
+    final case class Singleton[P : Term.Path](ref: P)  extends SimpleType
+    final case class Project(qual: Type, name: Type.Ident) extends SimpleType
+    //TODO non-empty targs, what's the typ?
+    final case class Apply(typ: SimpleType, targs: List[Type]) extends SimpleType
+    //TODO length >= 2
+    final case class Tuple(elements: List[Type]) extends SimpleType
+
+    sealed trait InfixType extends Type
+    final case class ApplyInfix(lhs: InfixType, op: Type.Ident, rhs: InfixType) extends InfixType
+    implicit def annotToCompound(t: Annotated): Compound = Compound(List(t), None)
+    final case class Compound(parents: List[Annotated], rfns: Option[RefineStat]) extends InfixType
+    //TODO non-empty dcls
+    final case class Existential(typ: InfixType, dcls: List[Decl.ExistentialDcl]) extends Type
+    final case class Function(params: List[Param.ParamType], ret: Type) extends Type
+    implicit def simpleToAnnot(t: SimpleType): Annotated = Annotated(t, Nil)
+    //TODO length of annots >= 1
+    final case class Annotated(typ: SimpleType, annots: List[Annotation]) extends Type
+
+    final case class Placeholder() extends WildIdent
   }
 
   sealed trait Pat extends SafeTree
   object Pat {
     final case object Empty extends Pat
     final case class Wildcard() extends Pat
-    // ??? Ident vs Bind + Type
-    // ??? Ascription
-    // ??? :_* @xeno-by: again, I suggest we have a separate tree for varargs
-    final case class Alt(left: Pat, right: Pat) extends Pat
-    final case class Tuple(elements: List[Pat]) extends Pat
-    final case class Extractor(ref: Term, elements: List[Pat]) extends Pat
-    // not sure whether needed
-    final case class Lit(value: Term) extends Pat
-    final case class Ident(value: Term) extends Pat
-    final case class Typed(expr: Term, tpt: Type) extends Pat
-    final case class Bind(name: Term, body: Pat) extends Pat
-
+    final case class SeqWildcard()
+    sealed trait Pattern1 extends Pat
+    sealed trait Pattern2 extends Pattern1
+    sealed trait Pattern3 extends Pattern2
+    sealed trait SimplePattern extends Pattern3
+    final case class Alternative(left: Pat, right: Pat) extends Pat
+    //TODO length of elems >= 2
+    final case class Tuple(elements: List[Pat]) extends SimplePattern
+    final case class Typed(lhs: Term.WildIdent, tpt: Type) extends Pattern1
+    //name should be varid
+    final case class Bind(name: Term.Ident, body: Pat) extends Pattern2
+    final case class StableId[T : Term.StableId](ref: T) extends SimplePattern
+    final case class Apply[T : Term.StableId](ref: T, elements: List[Pat]) extends SimplePattern
+    final case class ApplySeq[T : Term.StableId](ref: T, elements: List[Pat], repeated: Option[Term.Ident]) extends SimplePattern
+    final case class ApplyInfix(lhs: Pat, op: Term.Ident, rhs: Pat) extends Pattern3
   }
 
-  sealed trait Type extends SafeTree
-  object Type {
-    sealed trait Ref extends Type with SafeTree.Ref
-    //temperary empty type
-    final case object Empty extends Type
+  implicit def refineToCompound(t: RefineStat): Type.Compound = Type.Compound(Nil, Some(t))
+  
+  sealed trait RefineStat extends SafeTree
 
-    final case class Ident(name: TypeName) extends Ref
-    final case class Select(qual: SafeTree.Ref, name: TypeName) extends Ref
+  sealed trait Decl extends SafeTree with TemplateStmt
+  object Decl {
+    sealed trait ExistentialDcl extends Decl
+    sealed trait PureDcl extends Decl with RefineStat
+    //TODO length of ids >= 1
+    final case class Val(annots: List[Annotation], mods: List[Mod], ids: List[Term.Ident], typ: Type) extends Decl
+    final case class PureVal(ids: List[Term.Ident], typ: Type) extends ExistentialDcl with PureDcl
 
-    // ??? needs thought about Select vs Project and kind of ref
-    // @xeno-by: I suggest we separate Select and Project by Term.Ref and Type.Ref
-    // however Denys says this might cause problems with pattern matching in quasiquotes
+    final case class Var(annots: List[Annotation], mods: List[Mod], ids: List[Term.Ident], typ: Type) extends Decl
+    final case class PureVar(ids: List[Term.Ident], typ: Type) extends PureDcl
 
-    final case class Singleton(ref: Term.Ref)  extends Type
-    final case class Constant(value: Term.Lit) extends Type
-    // ??? final case class This
-    // ??? final case class Super
-    final case class TypeApply(typ: Type, targs: List[Type]) extends Type
-    final case class Compound(parents: List[Type], defns: List[Defn.Nested]) extends Type
-    // ??? needs sharper type for forSome. not just any defn, but just abstract val and abstract type
-    final case class Existential(typ: Type, quants: List[Defn]) extends Type
-    final case class Function(params: Type, res: Type) extends Type
-    final case class Tuple(elements: List[Type]) extends Type
-    final case class Annotated(typ: Type, annots: Annots.Type) extends Type
+    final case class Def(annots: List[Annotation], mods: List[Mod], name: Term.Ident, tparams: List[Param.TypeParam], paramss: Param.Clauses, typ: Option[Type]) extends Decl
+    final case class PureDef(name: Term.Ident, tparams: List[Param.TypeParam], paramss: Param.Clauses, typ: Option[Type]) extends PureDcl
+
+    final case class Typ(annots: List[Annotation], mods: List[Mod], name: Type.Ident, tparams: List[Param.Variant], lower: Option[Type], upper: Option[Type]) extends Decl
+    final case class PureType(name: Type.Ident, tparams: List[Param.Variant], lower: Option[Type], upper: Option[Type]) extends ExistentialDcl with PureDcl
   }
 
-  sealed trait Defn extends SafeTree
+  sealed trait Defn extends SafeTree with TemplateStmt
   object Defn {
     sealed trait TopLevel extends Defn
     sealed trait Nested extends Defn
+    sealed trait PatVar extends Defn
+    sealed trait Def extends Defn with Nested
 
-    // AbstractVal + ConcreteVal + TODO: base classes ???
-    // @xeno-by: this makes sense, because that will allow us to specify precise type for Type.Existential
-    // and also will rid ourselves of Term.Empty, but that would cause pattern matching problems.
-    // that would also be consistent with AbstractType vs AliasType
+    //TODO length of pats >= 1
+    final case class Val(annots: List[Annotation], mods: List[Mod], pats: List[Pat.Pattern2], typ: Option[Type], rhs: Term) extends PatVar
 
-    final case class AbstractVal(annots: Annots.AbstractVal, pats: List[Pat], typ: Type) extends Nested
+    final case class Var(annots: List[Annotation], mods: List[Mod], pats: List[Pat.Pattern2], typ: Option[Type], rhs: Term) extends PatVar
 
-    final case class Val(annots: Annots.Val, pats: List[Pat], typ: Option[Type], rhs: Term) extends Nested
+    final case class Fun(annots: List[Annotation], mods: List[Mod], name: Term.Ident, tparams: List[Param.TypeParam], paramss: Param.Clauses, typ: Option[Type], body: Term) extends Def
 
-    // ??? var x = _
-    final case class AbstractVar(annots: Annots.AbstractVar, pats: List[Pat], typ: Type) extends Nested
+    final case class This(annots: List[Annotation], mods: List[Mod], params: List[Param.Item], paramss: Param.Clauses, ce: ConstrExpr) extends Def
 
-    final case class Var(annots: Annots.Var, pats: List[Pat], typ: Option[Type], rhs: Term) extends Nested
+    final case class Typ(annots: List[Annotation], mods: List[Mod], name: Type.Ident, tparams: List[Param.Variant], body: Type) extends Defn with RefineStat
 
-    final case class AbstractDef(annots: Annots.AbstractDef, name: TermName, tparams: List[MethodTypeParam],
-                                 paramss: List[List[MethodParam]], implicits: List[MethodParam],
-                                 typ: Type) extends Nested
+    //final case class Macro(annots: List[Annotation], mods: List[Mod], name: Term.Ident, tparams: List[Param.TypeParam], paramss: Param.Clauses, typ: Type, body: Term) extends Nested
 
-    final case class Def(annots: Annots.Def, name: TermName, tparams: List[MethodTypeParam],
-                         paramss: List[List[MethodParam]], implicits: List[MethodParam],
-                         typ: Option[Type], body: Term) extends Nested
+    final case class Class(annots: List[Annotation], mods: List[Mod], name: Type.Ident, tparams: List[Param.Variant], ctor: PrimaryConstr, templ: ClassTemplate) extends TopLevel with Nested with BlockStmt
 
-    final case class Macro(annots: Annots.Macro, name: TermName, tparams: List[MethodTypeParam],
-                           paramss: List[List[MethodParam]], implicits: List[MethodParam],
-                           typ: Type, body: Term) extends Nested
+    final case class CaseClass(annots: List[Annotation], mods: List[Mod], name: Type.Ident, tparams: List[Param.Variant], ctor: PrimaryConstr, templ: ClassTemplate) extends TopLevel with Nested with BlockStmt
+    
+    final case class Trait(annots: List[Annotation], mods: List[Mod], name: Type.Ident, tparams: List[Param.Variant], templ: TraitTemplate) extends TopLevel with Nested with BlockStmt
 
-    final case class AbstractType(annots: Annots.AbstractType, name: TypeName, tparams: List[TypeTypeParam],
-                                  bounds: TypeBounds) extends Nested
+    final case class Object(annots: List[Annotation], mods: List[Mod], name: Term.Ident, templ: ClassTemplate) extends TopLevel with Nested with BlockStmt
 
-    final case class AliasType(annots: Annots.AliasType, name: TypeName, tparams: List[TypeTypeParam],
-                               body: Type) extends Nested
-
-    final case class PrimaryCtor(annots: Annots.PrimaryCtor, paramss: List[List[ClassParam]],
-                                 implicits: List[ClassParam]) extends Nested
-
-    final case class SecondaryCtor(annots: Annots.SecondaryCtor, paramss: List[List[MethodParam]],
-                                   implicits: List[MethodParam], primaryCtorArgss: List[List[Term]]) extends Nested
-
-    final case class Class(annots: Annots.Class, name: TypeName, tparams: List[ClassTypeParam],
-                           ctor: PrimaryCtor, templ: Template) extends TopLevel with Nested
-
-    final case class Trait(annots: Annots.Trait, name: TypeName, tparams: List[TraitTypeParam],
-                           templ: Template) extends TopLevel with Nested
-
-    final case class Object(annots: Annots.Object, name: TermName,
-                            templ: Template) extends TopLevel with Nested
-
-    final case class Package(ref: Term.Ref, body: List[TopLevel]) extends TopLevel
-    final case class PackageObject(name: TermName, templ: Template) extends TopLevel
+    final case class CaseObject(annots: List[Annotation], mods: List[Mod], name: Term.Ident, templ: ClassTemplate) extends TopLevel with Nested with BlockStmt
+    
+    final case class Package(ref: Term.Ref, body: List[Defn.TopLevel]) extends TopLevel with Nested
+    
+    final case class PackageObject(obj: Defn.Object) extends TopLevel with Nested
   }
 
-  final case class Import(clauses: List[Import.Clause]) extends SafeTree
-  object Import {
-    final case class Clause(ref: Term.Ref, sels: List[Selector]) extends SafeTree
+  final case class Import(clauses: List[Import.ImportExpr[_]]) extends BlockStmt with TemplateStmt with Defn.TopLevel
+  object Import { 
+    final case class ImportExpr[T: Term.StableId](ref: T, sels: List[Selector], last: Option[Term.Placeholder]) extends SafeTree
 
     sealed trait Selector extends SafeTree
     object Selector {
-      // ??? are we happy with having these as strings?
-      // neither TermName, nor TypeName along won't cut this
-      // however if we leave strings in place, then we won't be able to validate names
-      final case class Wildcard() extends Selector
-      final case class Name(name: String) extends Selector
-      final case class Rename(from: String, to: String) extends Selector
-      final case class Unimport(name: String) extends Selector
+      final case class Normal(name: Term.Ident) extends Selector
+      final case class Rename(from: Term.Ident, to: Term.Ident) extends Selector
+      final case class Unimport(name: Term.Ident) extends Selector
     }
   }
 
-  final case class Case(pat: Pat, cond: Term, body: Term) extends SafeTree
+  sealed trait ArgExpr[T]
+  object ArgExpr {
+    implicit object Exprs extends ArgExpr[List[Term]]
+    implicit object ExprsRepeat extends ArgExpr[Param.ArgExprRepeat]
+    implicit object CaseClauses extends ArgExpr[Term.CaseClauses]
+    implicit object Block extends ArgExpr[Term.Block]
+  }
+  sealed trait Param extends SafeTree
+  object Param {
+    final case class ArgExprRepeat(args: List[Term], rearg: Term)
 
-  // ??? sharpen the type of stats (only terms and nested defns are allowed)
-  final case class Template(early: List[Defn.Val], parents: List[Parent],
-                            self: Self, stats: List[SafeTree]) extends SafeTree
+    sealed trait ParamType extends SafeTree
+    final case class CallByNameType(typ: Type) extends ParamType
+    final case class RepeatedType(typ: Type) extends ParamType
+
+    final case class Item(annots: List[Annotation], id: Term.Ident, typ: Option[ParamType], rhs: Option[Term])
+    final case class Clauses(normal: List[List[Item]], im: Option[List[Item]])
+
+    sealed trait VarianceOp
+    final case object Invariance extends VarianceOp
+    final case object Covariance extends VarianceOp
+    final case object Contravariance extends VarianceOp
+
+    final case class Variant(annots: List[Annotation], variance: VarianceOp, tparam: TypeParam)
+    final case class TypeParam(name: Type.WildIdent, typs: List[Variant], lower: Option[Type], upper: Option[Type], view: List[Type], context: List[Type])
+
+    final case class ClassClauses(normal: List[List[ClassParam]], im: Option[List[ClassParam]])
+    //TODO val | var
+    sealed trait ValOrVar
+    final case object Val extends ValOrVar
+    final case object Var extends ValOrVar
+    final case class ClassParamMods(mods: List[Mod], pre: Option[ValOrVar])
+    final case class ClassParam(annots: List[Annotation], mods: Option[ClassParamMods], name: Term.Ident, typ: ParamType, rhs: Option[Term])
+  }
+  //args should be list of ArgExpr
+  final case class Annotation(typ: Type.SimpleType, args: List[List[Term]]) extends SafeTree
+  final case class ConstrAnnotation[T : ArgExpr](typ: Type.SimpleType, args: T) extends SafeTree
+  final case class PrimaryConstr(annot: List[ConstrAnnotation[_]], mod: Option[Mod.AccessModifier], cparams: Param.ClassClauses) extends SafeTree
+
+  sealed trait Mod extends SafeTree
+  object Mod {
+    sealed trait LocalModifier extends Mod
+    sealed trait AccessModifier extends Mod
+    final case object Override extends Mod
+
+    final case object Abstract extends LocalModifier
+    final case object Final extends LocalModifier
+    final case object Sealed extends LocalModifier
+    final case object Implicit extends LocalModifier
+    final case object Lazy extends LocalModifier
+
+    sealed trait AccessQualifier[T]
+    object AccessQualifier {
+      implicit object IdentQual extends AccessQualifier[Term.Ident]
+      implicit object ThisQual extends AccessQualifier[Term.This]
+    }
+    final case class Private[T : AccessQualifier](qual: Option[T]) extends AccessModifier
+    final case class Protected[T : AccessQualifier](qual: Option[T]) extends AccessModifier
+  }
+ 
+  final case class Case(pat: Pat, cond: Option[Term], body: Term.Block) extends SafeTree
+
+  final case class ConstrExpr(args: List[List[Term]], stmt: Option[List[BlockStmt]]) extends SafeTree
+  // for definitions, the modifiers can only be implicit or lazy, for templates, only local modifiers
+  sealed trait BlockStmt extends SafeTree
+  sealed trait TemplateStmt extends SafeTree
+  final case class Constr(typ: Type.Annotated, args: List[List[Term]]) extends SafeTree
+  final case class EarlyDef(annots: List[Annotation], mods: List[Mod], dfs: Defn.PatVar) extends SafeTree
+  final case class ClassTemplate(early: List[EarlyDef], ctor: Constr, parents: List[Type.Annotated], self: Option[SelfType[_]], body: List[TemplateStmt]) extends SafeTree
+  final case class TraitTemplate(early: List[EarlyDef], parents: List[Type.Annotated], self: Option[SelfType[_]], body: List[TemplateStmt]) extends SafeTree
+  sealed trait LegalSelf[T]
+  object LegalSelf {
+    implicit object IdentSelf extends LegalSelf[Term.Ident]
+    implicit object ThisSelf extends LegalSelf[Term.This]
+  }
+  final case class SelfType[T : LegalSelf](term: T, typ: Option[Type]) extends SafeTree
 
   sealed trait Enumerator extends SafeTree
   object Enumerator {
-    final case class Generator(pat: Pat, rhs: Term) extends Enumerator
-    final case class ValueDefinition(pat: Pat, rhs: Term) extends Enumerator
+    final case class Generator(pat: Pat.Pattern1, rhs: Term, cond: Option[Term]) extends Enumerator
+    final case class ValueDefinition(pat: Pat.Pattern1, rhs: Term) extends Enumerator
     final case class Guard(cond: Term) extends Enumerator
   }
 
-  final case class Self(name: TermName, typ: Option[Type]) extends SafeTree
+  final case class CompilationUnit(pkgs: List[Term.Ref], top: Defn.TopLevel) extends SafeTree
 
-  final case class Parent(name: Type.Ref, targs: List[Type], argss: List[List[Term]]) extends SafeTree
-
-  final case class TypeBounds(lo: Option[Type], hi: Option[Type]) extends SafeTree
-
-  final case class FunctionParam(name: TermName, typ: Option[Type]) extends SafeTree
-  final case class MethodParam(annots: Annots.MethodParam, name: TermName, typ: Type, default: Term) extends SafeTree
-  final case class ClassParam(annots: Annots.ClassParam, name: TermName, typ: Type, default: Term) extends SafeTree
-  final case class MethodTypeParam(annots: Annots.MethodTypeParam, name: TypeName,
-                                   tparams: List[TypeTypeParam],
-                                   contextBounds: List[Type.Ref], // ??? @xeno-by: what's allowed in context bounds?
-                                   viewBounds: List[Type.Ref],
-                                   bounds: TypeBounds) extends SafeTree
-  final case class TypeTypeParam(annots: Annots.TypeTypeParam, name: TypeName,
-                                 tparams: List[TypeTypeParam],
-                                 bounds: TypeBounds) extends SafeTree // ??? @xeno-by: btw why not have context bounds for type type params?
-  final case class TraitTypeParam(annots: Annots.TraitTypeParam, name: TypeName,
-                                  tparams: List[TypeTypeParam],
-                                  bounds: TypeBounds) extends SafeTree
-  final case class ClassTypeParam(annots: Annots.ClassTypeParam, name: TypeName,
-                                  tparams: List[TypeTypeParam],
-                                  contextBounds: List[Type.Ref], // ??? @xeno-by: what's allowed in context bounds?
-                                  viewBounds: List[Type.Ref],
-                                  bounds: TypeBounds) extends SafeTree
-
-  sealed trait Annots[T <: Annot] { def annots: List[T] }
-  object Annots {
-    final case class Term(annots: List[Annot.Term]) extends Annots[Annot.Term]
-    final case class Type(annots: List[Annot.Type]) extends Annots[Annot.Type]
-    final case class AbstractVal(annots: List[Annot.AbstractVal]) extends Annots[Annot.AbstractVal]
-    final case class Val(annots: List[Annot.Val]) extends Annots[Annot.Val]
-    final case class AbstractVar(annots: List[Annot.AbstractVar]) extends Annots[Annot.AbstractVar]
-    final case class Var(annots: List[Annot.Var]) extends Annots[Annot.Var]
-    final case class AbstractDef(annots: List[Annot.AbstractDef]) extends Annots[Annot.AbstractDef]
-    final case class Def(annots: List[Annot.Def]) extends Annots[Annot.Def]
-    final case class Macro(annots: List[Annot.Macro]) extends Annots[Annot.Macro]
-    final case class AbstractType(annots: List[Annot.AbstractType]) extends Annots[Annot.AbstractType]
-    final case class AliasType(annots: List[Annot.AliasType]) extends Annots[Annot.AliasType]
-    final case class PrimaryCtor(annots: List[Annot.PrimaryCtor]) extends Annots[Annot.PrimaryCtor]
-    final case class SecondaryCtor(annots: List[Annot.SecondaryCtor]) extends Annots[Annot.SecondaryCtor]
-    final case class Class(annots: List[Annot.Class]) extends Annots[Annot.Class]
-    final case class Trait(annots: List[Annot.Trait]) extends Annots[Annot.Trait]
-    final case class Object(annots: List[Annot.Object]) extends Annots[Annot.Object]
-    final case class MethodParam(annots: List[Annot.MethodParam]) extends Annots[Annot.MethodParam]
-    final case class ClassParam(annots: List[Annot.ClassParam]) extends Annots[Annot.ClassParam]
-    final case class MethodTypeParam(annots: List[Annot.MethodTypeParam]) extends Annots[Annot.MethodTypeParam]
-    final case class TypeTypeParam(annots: List[Annot.TypeTypeParam]) extends Annots[Annot.TypeTypeParam]
-    final case class TraitTypeParam(annots: List[Annot.TraitTypeParam]) extends Annots[Annot.TraitTypeParam]
-    final case class ClassTypeParam(annots: List[Annot.ClassTypeParam]) extends Annots[Annot.ClassTypeParam]
-  }
-
-  sealed trait Annot extends SafeTree
-  object Annot {
-    sealed trait Transient extends Annot // TODO: reserved for synthetic trees (e.g. resolved implicits) and attachments
-    sealed trait Source extends Annot
-    sealed trait Mod extends Source
-
-    final case class UserDefined(name: Type.Ref, targs: List[Type], argss: List[List[Term]])
-                     extends Source with All
-    final case class Private(within: Name) extends Mod with NestedDefn
-    final case class Protected(within: Name) extends Mod with NestedDefn
-    final case class Implicit() extends Mod with Val with AbstractVal
-                                            with Var with AbstractVar
-                                            with Def with AbstractDef
-                                            with Macro with Object
-    final case class Final() extends Mod with Val with Var with Def with Macro with AliasType with Class
-    final case class Sealed() extends Mod with Class with Trait
-    final case class Override() extends Mod with Val with Var with Def with Macro with AliasType with AbstractType with Object
-    final case class Case() extends Mod with Class with Object
-    final case class Abstract() extends Mod with Class
-    final case class Covariant() extends Mod with TypeTypeParam with TraitTypeParam with ClassTypeParam
-    final case class Contravariant() extends Mod with TypeTypeParam with TraitTypeParam with ClassTypeParam
-    // ??? @xeno-by: `abstract override' modifier only allowed for members of traits
-    // also it's unclear what can be abstract override
-    // final case class AbstractOverride() extends Mod
-    final case class Lazy() extends Mod with Val
-    final case class Doc(doc: String) extends Mod with NestedDefn
-
-    sealed trait Term extends Source
-    sealed trait Type extends Source
-    sealed trait AbstractVal extends Source
-    sealed trait Val extends Source
-    sealed trait AbstractVar extends Source
-    sealed trait Var extends Source
-    sealed trait AbstractDef extends Source
-    sealed trait Def extends Source
-    sealed trait Macro extends Source
-    sealed trait AbstractType extends Source
-    sealed trait AliasType extends Source
-    sealed trait PrimaryCtor extends Source
-    sealed trait SecondaryCtor extends Source
-    sealed trait Class extends Source
-    sealed trait Trait extends Source
-    sealed trait Object extends Source
-    sealed trait MethodParam extends Source
-    sealed trait ClassParam extends Source
-    sealed trait MethodTypeParam extends Source
-    sealed trait TypeTypeParam extends Source
-    sealed trait TraitTypeParam extends Source
-    sealed trait ClassTypeParam extends Source
-    sealed trait NestedDefn extends Val with Var with Def with Macro
-                            with AbstractType with AliasType
-                            with PrimaryCtor with SecondaryCtor
-                            with Class with Trait with Object
-                            with ClassParam
-    sealed trait Param extends MethodParam with ClassParam with MethodTypeParam
-                       with TypeTypeParam with TraitTypeParam with ClassTypeParam
-    sealed trait All extends Term with Type with NestedDefn with Param
-  }
 }

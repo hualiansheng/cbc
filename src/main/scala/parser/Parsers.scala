@@ -781,29 +781,31 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
        *                     |  WildcardType
        *  }}}
        */
-      def simpleType(): Tree = {
+      def simpleType(): SafeTree.Type = {
         val start = in.offset
         simpleTypeRest(in.token match {
-          case LPAREN   => atPos(start)(makeTupleType(inParens(types())))
-          case USCORE   => wildcardType(in.skipToken())
+          case LPAREN   => SafeTree.Type.Tuple(inParens(types()))
+          //TODO is wildcard type needed?
+          //case USCORE   => wildcardType(in.skipToken())
           case _        =>
-            pathEmpty(thisOK = false, typeOK = true) match {
-              case r @ SingletonTypeTree(_) => r
+            //TODO
+            typePath(thisOK = false, typeOK = true) match {
+              case r @ SafeTree.Type.Singleton(_) => r
               case r => convertToTypeId(r)
             }
         })
       }
 
-      private def typeProjection(t: Tree): Tree = {
+      private def typeProjection(t: SafeTree.Type): SafeTree.Type = {
         val hashOffset = in.skipToken()
         val nameOffset = in.offset
         val name       = identForType(skipIt = false)
         val point      = if (name == tpnme.ERROR) hashOffset else nameOffset
-        atPos(t.pos.start, point)(SelectFromTypeTree(t, name))
+        SafeTree.Type.Select(t, name)
       }
-      def simpleTypeRest(t: Tree): Tree = in.token match {
+      def simpleTypeRest(t: SafeTree.Type): SafeTree.Type = in.token match {
         case HASH     => simpleTypeRest(typeProjection(t))
-        case LBRACKET => simpleTypeRest(atPos(t.pos.start, t.pos.point)(AppliedTypeTree(t, typeArgs())))
+        case LBRACKET => simpleTypeRest(SafeTree.Type.TypeApply(t, typeArgs()))
         case _        => t
       }
 
@@ -871,7 +873,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
        *  Types ::= Type {`,' Type}
        *  }}}
        */
-      def types(): List[Tree] = commaSeparated(argType())
+      def types(): List[SafeTree.Type] = commaSeparated(argType())
       def functionTypes(): List[Tree] = commaSeparated(functionArgType())
     }
 
@@ -956,6 +958,51 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
       }
       t
     }
+
+    def typePath(thisOK: Boolean, typeOK: Boolean): SafeTree.Type = {
+      val start = in.offset
+      var t: SafeTree.Type = null
+      if (in.token == THIS) {
+        in.nextToken()
+        t = SafeTree.Term.This(tpnme.EMPTY)
+        if (!thisOK || in.token == DOT) {
+          t = selectors(t, typeOK, accept(DOT))
+        }
+      } else if (in.token == SUPER) {
+        in.nextToken()
+        val classQual = mixinQualifierOpt()
+        accept(DOT)
+        t = SafeTree.Term.SuperSelect(tpnme.EMPTY, classQual, ident(skipIt=false).toTermName)
+        if (in.token == DOT) t = selectors(t, typeOK, in.skipToken())
+      } else {
+        val tok = in.token
+        val name = ident()
+        t = {
+          val id = SafeTree.Term.Ident(name.toTermName)
+          if (tok == BACKQUOTED_IDENT) id.isBackquoted = true
+          id
+        }
+        if (in.token == DOT) {
+          val dotOffset = in.skipToken()
+          if (in.token == THIS) {
+            in.nextToken()
+            t = SafeTree.Term.This(name.toTypeName)
+            if (!thisOK || in.token == DOT)
+              t = selectors(t, typeOK, accept(DOT))
+          } else if (in.token == SUPER) {
+            in.nextToken()
+            val classQual = mixinQualifierOpt()
+            accept(DOT)
+            t = SafeTree.Term.SuperSelect(name.toTypeName, classQual, ident(skipIt=false).toTermName)
+            if (in.token == DOT) t = selectors(t, typeOK, in.skipToken())
+          } else {
+            t = selectors(t, typeOK, dotOffset)
+          }
+        }
+      }
+      t
+    }
+
 
     def selectors(t: SafeTree.Term, typeOK: Boolean, dotOffset: Offset): SafeTree.Term = {
       // TODO need another selector method for type
@@ -1131,7 +1178,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
      */
     def typedOpt(): Tree =
       if (in.token == COLON) { in.nextToken(); typ() }
-      else TypeTree()
+      else SafeTree.Type.Empty
 
     def typeOrInfixType(location: Location): Tree =
       if (location == Local) typ()
@@ -2339,7 +2386,7 @@ trait Parsers extends Scanners with MarkupParsers with ParsersCommon { self =>
     def patDefOrDcl(pos : Int, mods: Modifiers): List[Tree] = {
       var newmods = mods
       in.nextToken()
-      val lhs = commaSeparated(stripParens(noSeq.pattern2()))
+      val lhs = commaSeparated(noSeq.pattern2())
       val tp = typedOpt()
       val rhs =
         if (tp.isEmpty || in.token == EQUALS) {
